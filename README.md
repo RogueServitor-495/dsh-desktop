@@ -18,7 +18,7 @@
 - **Runtime 信息展示**：dsh 版本、node 版本、profile 名称与目录、插件数量与启用数、插件覆盖层路径
 - **开机自启**：系统级登录自启（LaunchAgent）+ 可选"启动应用时自动启动运行时"
 - **内嵌 DSH 界面**：应用内窗口打开 `http://127.0.0.1:<port>`，或改用系统浏览器
-- **内置运行时（自包含）**：`scripts/bundle-runtime.mjs` 在构建前把 Node.js LTS（arm64 + x64）、`@deepseek-ai/dsh` 全量依赖与 pnpm 打进 App；运行时优先使用内置 node/dsh，完全不依赖系统 Node；插件管理走内置 pnpm
+- **内置运行时（自包含）**：`scripts/bundle-runtime.mjs` 在构建前把 Node.js LTS（macOS arm64/x64 + Windows x64）、`@deepseek-ai/dsh` 全量依赖与 pnpm 打进 App；运行时优先使用内置 node/dsh，完全不依赖系统 Node；插件管理走内置 pnpm
 - **自动检测**：手动指定路径 > 内置运行时 > 系统 PATH / Homebrew / nvm / npx 缓存；支持手动覆盖 node/dsh 路径；无 pnpm 时自动生成 npx shim（兜底）
 
 ## 安装到本机
@@ -42,6 +42,27 @@ npx tauri build --debug   # 快速调试构建
 # 通用二进制（App 外壳同时支持 Intel / Apple Silicon，需先 rustup target add x86_64-apple-darwin）：
 npx tauri build --target universal-apple-darwin
 ```
+
+
+## Windows 适配
+
+代码层已跨平台（`cfg(windows)` / `cfg(unix)` 分支）：
+
+- **进程管理**：macOS 用进程组 + SIGTERM/SIGKILL（dsh 优雅排水契约）；Windows 用 `taskkill /PID <pid> /T`（先优雅后 `/F` 强杀，Windows 无 POSIX 信号，优雅排水为尽力而为）
+- **孤儿检测**：macOS 用 `pgrep -f`；Windows 用 PowerShell `Get-CimInstance Win32_Process` 匹配命令行
+- **spawn**：Windows 加 `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`，子进程不弹控制台窗口
+- **路径**：内置运行时按 `node-<platform>-<arch>` 存放（darwin-arm64 / darwin-x64 / win32-x64）；`which` 在 Windows 用 `where.exe`；PATH 分隔符 `;`，node 在 Windows 无 `bin/` 子目录
+- **pnpm 包装**：`bundle-runtime.mjs` 同时生成 POSIX sh 与 `pnpm.cmd` 两种包装（都指向内置 node）
+
+**在 Windows 上打包**（需 Windows 机器，Node + Rust toolchain + VS Build Tools）：
+
+```bash
+npm install
+npm run bundle:runtime   # 复用同一脚本：win32-x64 node + 原生模块（sharp/koffi/node-pty 等）
+npm run build:app        # tauri build → NSIS 安装包 (DSH_0.1.0_x64-setup.exe)
+```
+
+> 注：`bundle.runtime` 在 macOS 上即可产出全部平台（darwin ×2 + win32-x64）的资源树；Windows 最终打包仍需在 Windows 上执行 `tauri build`（NSIS）。
 
 ## 运行
 
