@@ -1,0 +1,15 @@
+{
+  "name": "dsh-desktop-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri desktop app managing the DeepSeek Harness (dsh) runtime",
+  "scripts": {
+    "tauri": "tauri",
+    "bundle:runtime": "node scripts/bundle-runtime.mjs",
+    "build:app": "tauri build",
+    "icon": "tauri icon ./icon-src.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

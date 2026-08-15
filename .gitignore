@@ -1,0 +1,8 @@
+node_modules/
+dist/
+target/
+icon-src.png
+.runtime-cache/
+src-tauri/resources/runtime/
+.DS_Store
+*.log

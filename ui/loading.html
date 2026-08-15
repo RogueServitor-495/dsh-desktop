@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DSH</title>
+<style>
+:root {
+  --bg: #0b0e13; --panel2: #161d28; --border: #232d3d; --border2: #2c3a4f;
+  --text: #dbe4f0; --muted: #8b99ab; --faint: #5c6a7c;
+  --accent: #4c9aff; --green: #34c98f; --red: #ff5c5c; --amber: #ffb454;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: radial-gradient(1200px 700px at 50% -10%, #141c2b 0%, var(--bg) 55%);
+  color: var(--text);
+  font: 14px/1.6 -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex; align-items: center; justify-content: center;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+.wrap { text-align: center; max-width: 460px; padding: 40px; }
+.logo {
+  width: 72px; height: 72px; margin: 0 auto 22px; border-radius: 18px;
+  background: linear-gradient(135deg, #1c2940, #0e1522);
+  border: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 12px 40px rgba(0,0,0,.45);
+  font-weight: 800; font-size: 26px; letter-spacing: 1px; color: var(--accent);
+}
+h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: .4px; }
+.sub { margin: 0 0 26px; color: var(--muted); font-size: 13px; }
+.spinner {
+  width: 34px; height: 34px; margin: 0 auto 18px;
+  border: 3px solid var(--border2); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.status { min-height: 24px; color: var(--muted); font-size: 13.5px; }
+.status.err { color: var(--red); }
+.status .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+.status .dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.status .dot.warn { background: var(--amber); }
+.actions { display: flex; gap: 12px; justify-content: center; margin-top: 26px; min-height: 40px; }
+.btn {
+  appearance: none; border: 1px solid var(--border2); border-radius: 10px;
+  background: var(--panel2); color: var(--text); padding: 9px 20px;
+  font-size: 13.5px; cursor: pointer; transition: filter .15s, transform .05s;
+}
+.btn:hover { filter: brightness(1.15); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: linear-gradient(180deg, #2f6fd0, #2455a8); border-color: #356fc0; color: #fff; font-weight: 600; }
+.btn.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+.foot { margin-top: 30px; color: var(--faint); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">DSH</div>
+  <h1>DeepSeek Harness</h1>
+  <p class="sub">本地 agent 客户端 · 内置运行时</p>
+  <div class="spinner" id="spinner"></div>
+  <div class="status" id="status"><span class="dot warn"></span>正在启动 DSH 运行时…</div>
+  <div class="actions" id="actions"></div>
+  <div class="foot" id="foot"></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const invoke = window.__TAURI__ && window.__TAURI__.core
+  ? (cmd, args) => window.__TAURI__.core.invoke(cmd, args)
+  : null;
+
+let stoppedStreak = 0;
+let navigated = false;
+
+function renderActions(state) {
+  const box = $("actions");
+  box.innerHTML = "";
+  const add = (label, cls, fn) => {
+    const b = document.createElement("button");
+    b.className = "btn " + (cls || "");
+    b.textContent = label;
+    b.onclick = fn;
+    box.appendChild(b);
+  };
+  if (!invoke) {
+    add("管理面板", "ghost", () => {});
+    return;
+  }
+  add("管理面板", "ghost", () => invoke("open_control"));
+  if (state === "stopped") add("启动运行时", "primary", () => { invoke("start_runtime").then(renderTick); });
+}
+
+function render(s) {
+  const st = $("status");
+  const running = s && s.status && s.status.running;
+  const ready = s && s.status && s.status.ready;
+  const phase = s && s.status ? s.status.phase : "";
+  const broken = s && (String(s.node).startsWith("⚠") || String(s.dsh).startsWith("⚠"));
+
+  if (ready && s.guiUrl && !navigated) {
+    navigated = true;
+    st.innerHTML = '<span class="dot ok"></span>运行时就绪，正在进入 DSH…';
+    setTimeout(() => { window.location.href = s.guiUrl; }, 250);
+    renderActions("ready");
+    return;
+  }
+  if (running) {
+    stoppedStreak = 0;
+    $("spinner").style.display = "";
+    st.innerHTML = phase === "starting" || phase === "stopping"
+      ? '<span class="dot warn"></span>运行时 ' + (phase === "stopping" ? "停止中…" : "启动中，等待端口就绪…")
+      : '<span class="dot warn"></span>正在连接 DSH 界面…';
+    renderActions("starting");
+    return;
+  }
+  stoppedStreak += 1;
+  if (stoppedStreak < 6) { // give the auto-start a moment before showing controls
+    $("spinner").style.display = "";
+    st.innerHTML = '<span class="dot warn"></span>正在启动 DSH 运行时…';
+    renderActions("starting");
+    return;
+  }
+  $("spinner").style.display = "none";
+  st.innerHTML = broken
+    ? '<span class="dot warn"></span>运行时不可用：' + (s.node + " · " + s.dsh)
+    : '<span class="dot warn"></span>运行时未启动';
+  st.className = "status" + (broken ? " err" : "");
+  renderActions("stopped");
+}
+
+function renderTick() {
+  if (!invoke) { render(null); return; }
+  invoke("get_snapshot")
+    .then((s) => render(s))
+    .catch(() => render(null));
+}
+
+// footer: bundled runtime versions
+if (invoke) {
+  invoke("get_snapshot").then((s) => {
+    const info = s.bundleInfo ? s.bundleInfo : "";
+    const node = String(s.node || "");
+    $("foot").textContent = info
+      ? "内置运行时：" + info + (node.includes("（内置运行时）") ? "" : "")
+      : "";
+  }).catch(() => {});
+}
+
+setInterval(renderTick, 600);
+renderTick();
+</script>
+</body>
+</html>

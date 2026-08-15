@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DSH 管理面板</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="22" height="22">
+          <path d="M9 10.5 L17 16 L9 21.5" fill="none" stroke="#7cc0ff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M18 10.5 L26 16 L18 21.5" fill="none" stroke="#3f8bff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>DSH 管理面板</h1>
+        <p>DeepSeek Harness 运行时管理器</p>
+      </div>
+    </div>
+    <div class="status-pill" id="statusPill">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">—</span>
+      <span class="pill-meta" id="statusMeta"></span>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">
+      <svg viewBox="0 0 24 24" width="15" height="15"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v4.5l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      总览
+    </button>
+    <button class="tab" data-tab="launch">
+      <svg viewBox="0 0 24 24" width="15" height="15"><path d="M4 7h11M4 12h7M4 17h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="19" cy="7" r="1.8" fill="currentColor"/><circle cx="15" cy="12" r="1.8" fill="currentColor"/><circle cx="21" cy="17" r="1.8" fill="currentColor"/></svg>
+      启动参数
+    </button>
+    <button class="tab" data-tab="plugins">
+      <svg viewBox="0 0 24 24" width="15" height="15"><path d="M14.5 3.5l6 6-10 10H4.5v-6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      插件管理
+    </button>
+    <button class="tab" data-tab="logs">
+      <svg viewBox="0 0 24 24" width="15" height="15"><path d="M4 4h16v16H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 9l4 3-4 3M13 15h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      运行日志
+    </button>
+  </nav>
+
+  <main class="content">
+    <!-- ── 总览 ── -->
+    <section class="tab-page active" id="tab-overview">
+      <div class="hero">
+        <div class="hero-status">
+          <span class="hero-dot" id="heroDot"></span>
+          <div>
+            <div class="hero-title" id="heroTitle">—</div>
+            <div class="hero-sub" id="heroSub">—</div>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <button id="btnStart" class="btn primary">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path d="M7 5l12 7-12 7z" fill="currentColor"/></svg>
+            启动
+          </button>
+          <button id="btnStop" class="btn danger">
+            <svg viewBox="0 0 24 24" width="13" height="13"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+            停止
+          </button>
+          <button id="btnRestart" class="btn">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            重启
+          </button>
+          <button id="btnOpenGui" class="btn accent">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 5h16v14H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 9h16" stroke="currentColor" stroke-width="2"/></svg>
+            打开 DSH 界面
+          </button>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <section class="card">
+          <h2 class="card-title">运行时状态</h2>
+          <dl class="kv">
+            <div><dt>运行状态</dt><dd id="ovPhase">—</dd></div>
+            <div><dt>进程 PID</dt><dd id="ovPid">—</dd></div>
+            <div><dt>已运行</dt><dd id="ovUptime">—</dd></div>
+            <div><dt>端口</dt><dd id="ovPort">—</dd></div>
+            <div><dt>上次退出码</dt><dd id="ovExit">—</dd></div>
+          </dl>
+        </section>
+        <section class="card">
+          <h2 class="card-title">环境信息</h2>
+          <dl class="kv">
+            <div><dt>dsh 版本</dt><dd id="ovDshVersion">—</dd></div>
+            <div><dt>node 版本</dt><dd id="ovNodeVersion">—</dd></div>
+            <div><dt>profile</dt><dd id="ovProfile">—</dd></div>
+            <div><dt>内置运行时</dt><dd class="mono" id="ovBundle" style="display:none">—</dd></div>
+            <div><dt>插件</dt><dd id="ovPlugins">—</dd></div>
+            <div><dt>工作目录</dt><dd class="mono" id="ovWorkspace">—</dd></div>
+          </dl>
+        </section>
+      </div>
+    </section>
+
+    <!-- ── 启动参数 ── -->
+    <section class="tab-page" id="tab-launch">
+      <div class="grid2">
+        <section class="card">
+          <h2 class="card-title">网络与服务</h2>
+          <div class="field">
+            <label for="port">端口</label>
+            <input id="port" type="number" min="1" max="65535" />
+            <p class="hint">运行时监听端口；0 = 让系统分配空闲端口。修改后需重启生效</p>
+          </div>
+          <div class="field">
+            <label for="host">绑定主机</label>
+            <select id="host">
+              <option value="127.0.0.1">127.0.0.1（仅本机，安全）</option>
+              <option value="0.0.0.0">0.0.0.0（局域网）— 不被 dsh CLI 支持</option>
+            </select>
+            <p class="hint">dsh 出于安全拒绝 0.0.0.0；如需局域网访问，请在 profile 的 cordis.patch.yml 覆盖 webserver host</p>
+          </div>
+          <div class="field">
+            <label for="trustedHosts">信任主机（trusted-host）</label>
+            <input id="trustedHosts" type="text" placeholder="例如 192.168.1.5, my.lan.host" spellcheck="false" />
+            <p class="hint">额外信任的 /api 浏览器来源（逗号或空格分隔，可多个），用于浏览器信任栅栏</p>
+          </div>
+          <div class="field">
+            <label for="extraArgs">额外启动参数</label>
+            <input id="extraArgs" type="text" placeholder="例如 --trusted-host 10.0.0.8" spellcheck="false" />
+            <p class="hint">原样追加到 dsh 命令行（空格分隔，不支持引号分组）</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">路径与行为</h2>
+          <div class="field">
+            <label for="workspace">工作目录</label>
+            <input id="workspace" type="text" spellcheck="false" />
+            <p class="hint">dsh 进程的启动目录（workspace 根）</p>
+          </div>
+          <div class="field">
+            <label for="profile">profile 名称</label>
+            <input id="profile" type="text" spellcheck="false" />
+            <p class="hint">$DSH_HOME/profiles 下的 profile（默认 web）；插件装到该 profile</p>
+          </div>
+          <div class="field">
+            <label for="dshBin">dsh 入口（留空自动检测）</label>
+            <input id="dshBin" type="text" placeholder="自动检测…" spellcheck="false" />
+            <p class="resolved" id="dshResolved">—</p>
+          </div>
+          <div class="field">
+            <label for="nodePath">node 可执行文件（留空自动检测）</label>
+            <input id="nodePath" type="text" placeholder="自动检测…" spellcheck="false" />
+            <p class="resolved" id="nodeResolved">—</p>
+          </div>
+          <div class="checks">
+            <label class="check"><input type="checkbox" id="startOnLaunch" /> 启动应用时自动启动运行时</label>
+            <label class="check"><input type="checkbox" id="autostart" /> 开机自启本应用（登录时启动）</label>
+          </div>
+          <div class="field">
+            <label>打开界面方式</label>
+            <div class="seg" id="guiMode">
+              <button data-mode="true" class="seg-btn active">应用内窗口</button>
+              <button data-mode="false" class="seg-btn">系统浏览器</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card cmd-card">
+        <h2 class="card-title">启动命令预览</h2>
+        <pre class="cmd-preview" id="cmdPreview">—</pre>
+        <p class="hint">保存设置后此处实时反映实际将执行的命令；点击「保存设置」应用更改。</p>
+        <div class="cmd-actions">
+          <button id="btnSave" class="btn primary">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 4v5h7V4M8 20v-6h8v6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            保存设置
+          </button>
+          <p class="toast" id="toast"></p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ── 插件管理 ── -->
+    <section class="tab-page" id="tab-plugins">
+      <section class="card">
+        <div class="section-head">
+          <h2 class="card-title">插件管理 <span class="sub" id="pluginSummary"></span></h2>
+          <div class="runtime-info" id="runtimeInfo">—</div>
+        </div>
+        <div class="import-bar">
+          <input id="pluginSpec" type="text" placeholder="npm 包名 / git URL（github:user/repo、git+https://…）/ tarball URL" spellcheck="false" />
+          <button id="btnAddPlugin" class="btn primary">导入</button>
+        </div>
+        <p class="hint" id="pluginHint">导入后若运行时正在运行将自动重启以生效；非 dsh.bundle 插件导入后需在此启用（生成 patch 行）</p>
+        <div id="pluginList" class="plugin-list"></div>
+      </section>
+    </section>
+
+    <!-- ── 运行日志 ── -->
+    <section class="tab-page" id="tab-logs">
+      <section class="card log-card">
+        <div class="section-head">
+          <h2 class="card-title">运行日志 <span class="logfile" id="logFile"></span></h2>
+          <div class="logbar">
+            <label class="check small"><input type="checkbox" id="autoscroll" checked /> 自动滚动</label>
+            <button id="btnClearLogs" class="btn mini">清空显示</button>
+            <button id="btnRevealLogs" class="btn mini">在 Finder 中显示</button>
+          </div>
+        </div>
+        <pre id="logBox" class="logs"></pre>
+      </section>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span id="footInfo">—</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
