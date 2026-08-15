@@ -63,6 +63,10 @@ npm run build:app        # tauri build → NSIS 安装包 (DSH_0.1.0_x64-setup.e
 ```
 
 > 注：`bundle.runtime` 在 macOS 上即可产出全部平台（darwin ×2 + win32-x64）的资源树；Windows 最终打包仍需在 Windows 上执行 `tauri build`（NSIS）。
+>
+> **macOS 上自检 Windows 编译**：`rustup target add x86_64-pc-windows-msvc` 后用 stub rc 跑
+> `RC=<(stub llvm-rc)> cargo check --target x86_64-pc-windows-msvc`（stub 见 scripts/stub-llvm-rc.sh，
+> 仅作编译自检；真实打包在 Windows 上用真实 llvm-rc）。
 
 ## 运行
 
