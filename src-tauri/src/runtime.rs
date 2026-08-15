@@ -91,6 +91,7 @@ fn signal_terminate(pid: u32, pgid: i32) {
     }
     #[cfg(windows)]
     {
+        let _ = pgid; // no process groups on Windows; taskkill /T covers the tree
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T"])
             .output();
@@ -107,6 +108,7 @@ fn force_kill_tree(pid: u32, pgid: i32) {
     }
     #[cfg(windows)]
     {
+        let _ = pgid;
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();

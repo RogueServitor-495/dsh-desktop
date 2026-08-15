@@ -209,7 +209,8 @@ pub fn detect_node(explicit: Option<&str>) -> Result<PathBuf, String> {
         }
         // nvm-windows fallback
         if let Ok(appdata) = std::env::var("APPDATA") {
-            if let Some(p) = newest_matching(Path::new(&appdata).join("nvm"), "node.exe") {
+            let nvm_dir = Path::new(&appdata).join("nvm");
+            if let Some(p) = newest_matching(&nvm_dir, "node.exe") {
                 return Ok(p);
             }
         }
