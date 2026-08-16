@@ -29,7 +29,8 @@
     "active": true,
     "targets": [
       "app",
-      "nsis"
+      "nsis",
+      "dmg"
     ],
     "resources": [
       "resources/runtime"

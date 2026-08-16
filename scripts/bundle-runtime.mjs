@@ -31,15 +31,19 @@ const CACHE = path.join(ROOT, ".runtime-cache");
 const NODE_MAJOR = process.env.BUNDLE_NODE_MAJOR || "24";
 const DSH_VERSION = process.env.BUNDLE_DSH_VERSION || "0.1.0-rc.6";
 const DIST_BASE = "https://nodejs.org/dist";
+// Node's child_process cannot reliably exec bare .cmd/.bat names on Windows —
+// use the explicit npm.cmd there (GitHub Actions windows runners have it on PATH).
+const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+// Which node platforms to bundle. Default: all. CI sets e.g. "win32-x64" or
+// "darwin-arm64" to keep installers small (GitHub artifacts are capped ~500MB).
+const BUNDLE_PLATFORMS = (process.env.BUNDLE_PLATFORMS || "darwin-arm64,darwin-x64,win32-x64")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const wantPlatform = (platform, arch) => BUNDLE_PLATFORMS.includes(platform + "-" + arch);
 
 function log(...a) { console.log("[bundle]", ...a); }
 function run(cmd, args, opts = {}) {
   log("$", cmd, ...args);
   return execFileSync(cmd, args, { stdio: "inherit", ...opts });
-}
-function sh(cmd, opts = {}) {
-  log("$ sh -c", cmd);
-  return execFileSync("sh", ["-c", cmd], { stdio: "inherit", ...opts });
 }
 async function fetchJson(url) {
   const r = await fetch(url);
@@ -57,7 +61,8 @@ async function extract(archive, destDir) {
   await rm(destDir, { recursive: true, force: true });
   await mkdir(destDir, { recursive: true });
   // bsdtar (macOS/Windows) auto-detects gzip and zip; strip the top dir.
-  sh(`tar -xf "${archive}" -C "${destDir}" --strip-components=1`);
+  // Use execFileSync (no shell) so Windows backslash paths are never mangled.
+  run("tar", ["-xf", archive, "-C", destDir, "--strip-components=1"]);
 }
 
 // ── 1. resolve node version (latest of the chosen LTS major) ────────────────
@@ -74,7 +79,8 @@ const nodeTargets = [
   { platform: "darwin", arch: "arm64", dist: "darwin-arm64", ext: "tar.gz", bin: ["bin", "node"] },
   { platform: "darwin", arch: "x64", dist: "darwin-x64", ext: "tar.gz", bin: ["bin", "node"] },
   { platform: "win32", arch: "x64", dist: "win-x64", ext: "zip", bin: ["node.exe"] },
-];
+].filter((t) => wantPlatform(t.platform, t.arch));
+if (nodeTargets.length === 0) throw new Error("BUNDLE_PLATFORMS selects no node targets: " + BUNDLE_PLATFORMS);
 for (const t of nodeTargets) {
   const tag = `${t.platform}-${t.arch}`;
   const archive = `node-${NODE_VERSION}-${t.dist}.${t.ext}`;
@@ -114,7 +120,7 @@ await writeFile(
 const dshInstalled = existsSync(path.join(dshDir, "node_modules", "@deepseek-ai", "dsh", "package.json"));
 if (!dshInstalled) {
   log("npm install @deepseek-ai/dsh@" + DSH_VERSION + " (omit dev)");
-  run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir });
+  run(NPM, ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir });
 } else {
   log("dsh install already present, keep");
 }
@@ -136,11 +142,11 @@ const natives = [
   "@img/sharp-win32-x64",
   "@img/sharp-libvips-win32-x64",
   "@koromix/koffi-win32-x64",
-];
+].filter((pkg) => BUNDLE_PLATFORMS.some((tag) => pkg.includes(tag)));
 const resolvable = [];
 for (const pkg of natives) {
   try {
-    const v = execFileSync("npm", ["view", pkg, "version"], { stdio: "pipe" }).toString().trim();
+    const v = execFileSync(NPM, ["view", pkg, "version"], { stdio: "pipe" }).toString().trim();
     resolvable.push(pkg + "@" + v);
     log("native pkg", pkg, "->", v);
   } catch {
@@ -161,7 +167,7 @@ const allExtrasPresent = extras.every((spec) => {
 });
 if (!allExtrasPresent) {
   log("npm install cross-arch natives + pnpm");
-  run("npm", ["install", "--force", "--omit=dev", "--no-save", "--no-audit", "--no-fund", "--no-update-notifier", ...extras], { cwd: dshDir });
+  run(NPM, ["install", "--force", "--omit=dev", "--no-save", "--no-audit", "--no-fund", "--no-update-notifier", ...extras], { cwd: dshDir });
 } else {
   log("cross-arch natives + pnpm already present, keep");
 }
@@ -221,6 +227,7 @@ if (existsSync(pnpmReal)) {
 // prebuilds for every OS; sharp ships a wasm build. Removing them keeps the
 // app bundle lean. Windows pty prebuilds (win32-x64) are kept — needed there.
 for (const arch of ["arm64", "x64"]) {
+  if (!wantPlatform("darwin", arch)) continue;
   const nd = path.join(RES, "node-darwin-" + arch);
   await rm(path.join(nd, "include"), { recursive: true, force: true });
   await rm(path.join(nd, "share"), { recursive: true, force: true });
@@ -228,8 +235,12 @@ for (const arch of ["arm64", "x64"]) {
 }
 const ptyPre = path.join(dshDir, "node_modules", "node-pty", "prebuilds");
 if (existsSync(ptyPre)) {
-  for (const dir of ["win32-ia32", "linux-x64", "linux-arm64", "linux-arm", "linux-ia32", "freebsd-x64", "openbsd-x64", "sunos-x64"]) {
-    await rm(path.join(ptyPre, dir), { recursive: true, force: true });
+  const ptyKeep = new Set(BUNDLE_PLATFORMS.map((t) => t.replace("-", "-")));
+  const ptyDirs = ["win32-arm64", "win32-x64", "win32-ia32", "linux-x64", "linux-arm64", "linux-arm", "linux-ia32", "freebsd-x64", "openbsd-x64", "sunos-x64"];
+  for (const dir of ptyDirs) {
+    if (!ptyKeep.has(dir.replace("-", "-"))) {
+      await rm(path.join(ptyPre, dir), { recursive: true, force: true });
+    }
   }
 }
 await rm(path.join(dshDir, "node_modules", "@img", "sharp-wasm32"), { recursive: true, force: true });
@@ -256,7 +267,7 @@ const manifest = {
   nodeVersion: NODE_VERSION.replace(/^v/, ""),
   nodeLts: pick.lts || null,
   dshVersion: dshPkg.version,
-  platforms: ["darwin-arm64", "darwin-x64", "win32-x64"],
+  platforms: BUNDLE_PLATFORMS.slice(),
   pnpm: "9",
   builtAt: new Date().toISOString(),
 };

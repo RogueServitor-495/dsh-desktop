@@ -68,6 +68,20 @@ npm run build:app        # tauri build → NSIS 安装包 (DSH_0.1.0_x64-setup.e
 > `RC=<(stub llvm-rc)> cargo check --target x86_64-pc-windows-msvc`（stub 见 scripts/stub-llvm-rc.sh，
 > 仅作编译自检；真实打包在 Windows 上用真实 llvm-rc）。
 
+## 自动构建（GitHub Actions）
+
+`.github/workflows/build.yml` 在以下时机自动生成安装包：
+
+- **push 到 main** / **手动触发**（Actions 页面 Run workflow）：生成安装包并作为 Artifact 上传
+  - Windows：`DSH_0.1.0_x64-setup.exe`（NSIS 安装包，`dsh-windows-installer` artifact）
+  - macOS：`DSH_0.1.0_aarch64.dmg`（`dsh-macos-dmg` artifact）
+- **打 tag（`v*`）**：额外自动发布 GitHub Release，附带两个安装包
+
+CI 构建细节：
+
+- 各平台只捆绑本平台的 node（`BUNDLE_PLATFORMS` 环境变量：win32-x64 / darwin-arm64），安装包保持在 Artifact 500MB 上限内；本地开发默认仍产出全平台运行时
+- Windows 用 `windows-latest`（自带 VS Build Tools，真实 llvm-rc 编译图标资源）；macOS 用 `macos-latest`（arm64）
+- node 发行包缓存于 `.runtime-cache`（actions/cache），重复构建不重复下载
 ## 运行
 
 ```bash
