@@ -72,10 +72,10 @@ npm run build:app        # tauri build → NSIS 安装包 (DSH_0.1.0_x64-setup.e
 
 `.github/workflows/build.yml` 在以下时机自动生成安装包：
 
-- **push 到 main** / **手动触发**（Actions 页面 Run workflow）：生成安装包并作为 Artifact 上传
-  - Windows：`DSH_0.1.0_x64-setup.exe`（NSIS 安装包，`dsh-windows-installer` artifact）
-  - macOS：`DSH_0.1.0_aarch64.dmg`（`dsh-macos-dmg` artifact）
-- **打 tag（`v*`）**：额外自动发布 GitHub Release，附带两个安装包
+- **push 到 main** / **手动触发**（Actions 页面 Run workflow）：生成安装包并上传 Artifact，同时更新滚动 **Nightly Release**（`nightly` tag，Releases 页可随时下载）
+  - Windows：`DSH_0.1.0_x64-setup.exe`（NSIS 安装包，`dsh-windows-installer`）
+  - macOS：`DSH_0.1.0_aarch64.dmg`（`dsh-macos-dmg`）
+- **打 tag（`v*`）**：额外发布正式的版本 Release，附带两个安装包与自动生成的 release notes
 
 CI 构建细节：
 
