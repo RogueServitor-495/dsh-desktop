@@ -41,9 +41,21 @@ const BUNDLE_PLATFORMS = (process.env.BUNDLE_PLATFORMS || "darwin-arm64,darwin-x
 const wantPlatform = (platform, arch) => BUNDLE_PLATFORMS.includes(platform + "-" + arch);
 
 function log(...a) { console.log("[bundle]", ...a); }
+// Windows cannot spawn .cmd/.bat directly (CreateProcessW -> EINVAL); run them
+// through cmd.exe /c. On unix, plain execFileSync.
 function run(cmd, args, opts = {}) {
   log("$", cmd, ...args);
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd)) {
+    return execFileSync("cmd", ["/c", cmd, ...args], { stdio: "inherit", ...opts });
+  }
   return execFileSync(cmd, args, { stdio: "inherit", ...opts });
+}
+// Like run() but captures stdout (used for "npm view").
+function spawnCapture(cmd, args) {
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd)) {
+    return execFileSync("cmd", ["/c", cmd, ...args], { stdio: "pipe" });
+  }
+  return execFileSync(cmd, args, { stdio: "pipe" });
 }
 async function fetchJson(url) {
   const r = await fetch(url);
@@ -146,7 +158,7 @@ const natives = [
 const resolvable = [];
 for (const pkg of natives) {
   try {
-    const v = execFileSync(NPM, ["view", pkg, "version"], { stdio: "pipe" }).toString().trim();
+    const v = spawnCapture(NPM, ["view", pkg, "version"]).toString().trim();
     resolvable.push(pkg + "@" + v);
     log("native pkg", pkg, "->", v);
   } catch {
