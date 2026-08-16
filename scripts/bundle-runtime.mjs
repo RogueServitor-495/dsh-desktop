@@ -267,13 +267,20 @@ if (!existsSync(binJs)) throw new Error("bundled dsh bin.js missing: " + binJs);
 const pnpmBin = path.join(dshDir, "node_modules", ".bin", "pnpm");
 if (!existsSync(pnpmBin)) throw new Error("bundled pnpm missing: " + pnpmBin);
 
-// smoke: bundled node runs bundled dsh
-const out = execFileSync(
-  path.join(RES, "node-darwin-arm64", "bin", "node"),
-  [binJs, "-V"],
-  { env: { ...process.env, PATH: process.env.PATH } }
-).toString().trim();
-log("smoke: bundled node + dsh -V ->", out);
+// smoke: bundled node (HOST platform) runs bundled dsh — CI may only have
+// win32-x64 or darwin-arm64 in the tree, so never hardcode a platform.
+const hostPlatform = process.platform === "win32" ? "win32" : "darwin";
+const hostArch = process.arch === "arm64" ? "arm64" : "x64";
+const hostNodeDir = path.join(RES, "node-" + hostPlatform + "-" + hostArch);
+const hostNodeBin = process.platform === "win32"
+  ? path.join(hostNodeDir, "node.exe")
+  : path.join(hostNodeDir, "bin", "node");
+if (!existsSync(hostNodeBin)) {
+  log("WARN: no host node in bundle (" + hostNodeBin + ") — skipping smoke");
+} else {
+  const out = spawnCapture(hostNodeBin, [binJs, "-V"]).toString().trim();
+  log("smoke: bundled node + dsh -V ->", out);
+}
 
 const manifest = {
   nodeVersion: NODE_VERSION.replace(/^v/, ""),
