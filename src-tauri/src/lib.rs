@@ -547,11 +547,10 @@ fn get_runtime_info(state: State<'_, AppState>) -> plugins::RuntimeInfo {
         ) else {
             return "未知".into();
         };
-        let out = match std::process::Command::new(node_p)
-            .arg(dsh_p)
-            .arg("--version")
-            .output()
-        {
+        let mut cmd = std::process::Command::new(node_p);
+        cmd.arg(dsh_p).arg("--version");
+        paths::hide_console(&mut cmd);
+        let out = match cmd.output() {
             Ok(o) => o,
             Err(_) => return "未知".into(),
         };
@@ -561,11 +560,14 @@ fn get_runtime_info(state: State<'_, AppState>) -> plugins::RuntimeInfo {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     })();
     let node_version = match paths::detect_node(settings.node_path.as_deref()) {
-        Ok(p) => std::process::Command::new(&p)
-            .arg("--version")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "未知".into()),
+        Ok(p) => {
+            let mut cmd = std::process::Command::new(&p);
+            cmd.arg("--version");
+            paths::hide_console(&mut cmd);
+            cmd.output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "未知".into())
+        }
         Err(_) => "未知".into(),
     };
     let count = plugins::list_plugins(&profile).len();

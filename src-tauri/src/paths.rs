@@ -126,11 +126,30 @@ pub fn bundled_versions() -> Option<String> {
     std::fs::read_to_string(root.join("versions.json")).ok()
 }
 
+/// Apply Windows console suppression to a child process so helper subprocesses
+/// (powershell, taskkill, where.exe, node --version, plugin ops) never flash a
+/// console window when spawned from the GUI app. No-op on non-Windows.
+pub fn hide_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Resolve a command name through PATH: "where" on Windows, sh -lc on unix.
 pub fn which(cmd: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("where.exe").arg(cmd).output().ok()?;
+        let mut w = std::process::Command::new("where.exe");
+        w.arg(cmd);
+        hide_console(&mut w);
+        let out = w.output().ok()?;
         if !out.status.success() {
             return None;
         }

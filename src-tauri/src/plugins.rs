@@ -314,6 +314,7 @@ pub fn run_plugin_op(
         .env("PATH", full_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::paths::hide_console(&mut cmd);
     let child = cmd.spawn().map_err(|e| format!("failed to run dsh plugin: {e}"))?;
     let out = child
         .wait_with_output()

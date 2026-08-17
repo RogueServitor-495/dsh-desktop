@@ -92,9 +92,10 @@ fn signal_terminate(pid: u32, pgid: i32) {
     #[cfg(windows)]
     {
         let _ = pgid; // no process groups on Windows; taskkill /T covers the tree
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T"])
-            .output();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T"]);
+        crate::paths::hide_console(&mut cmd);
+        let _ = cmd.output();
     }
 }
 
@@ -109,9 +110,10 @@ fn force_kill_tree(pid: u32, pgid: i32) {
     #[cfg(windows)]
     {
         let _ = pgid;
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        crate::paths::hide_console(&mut cmd);
+        let _ = cmd.output();
     }
 }
 
@@ -196,10 +198,10 @@ pub fn external_pid(port: u16) -> Option<u32> {
         let script = format!(
             "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ $_.CommandLine -like '*lib/bin.js*' -and $_.CommandLine -like '*--port {port}*' }} | Select-Object -First 1 -ExpandProperty ProcessId"
         );
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .ok()?;
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        crate::paths::hide_console(&mut cmd);
+        let out = cmd.output().ok()?;
         if !out.status.success() {
             return None;
         }
