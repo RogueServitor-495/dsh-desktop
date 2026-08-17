@@ -14,6 +14,7 @@
 - **优雅退出契约**：停止时对进程组发 SIGTERM，等待 dsh 官方契约的优雅排水（≤5s、退出码 0）；15s 超时后才强制 SIGKILL——**只在停止请求期间生效**，正常运行时不会被误杀
 - **日志**：内存环形缓冲（4000 行）+ `runtime.log` 全量落盘，管理面板实时 tail
 - **托盘图标（菜单栏）**：状态行实时显示运行状态；左键点击回到 DSH 主界面；菜单项：显示 DSH 主界面、启动/停止/重启运行时、管理面板、开机自启（勾选）、退出
+- **审批桌面弹窗**：DSH 运行时需要权限审批时，弹出置顶小窗（显示原因/命令，一键「允许一次 / 拒绝」），决策直接转发回 DSH 界面；窗口未聚焦也不错过审批
 - **插件管理**：列出已安装插件（名称/版本/描述/来源/启用状态）、通过 npm 包名 / git URL / tarball URL 导入、启用/禁用（bundle 层切换 `dsh.profile.bundles`，普通插件生成 app 托管的 patch overlay）、删除（pnpm remove + 自动清理 patch 行）
 - **内置 dsh-plugin-manager 插件**：默认随 App 内置并启用（vendored 源码在 `src-tauri/resources/plugins/dsh-plugin-manager/`，构建时打进运行时并自动写入 app overlay），打开 DSH 界面即可在「设置 → 插件」里使用插件管理面板（导入/启停/移除/更新/插件市场）；如需更新 vendored 副本，替换该目录后重新构建
 - **Runtime 信息展示**：dsh 版本、node 版本、profile 名称与目录、插件数量与启用数、插件覆盖层路径

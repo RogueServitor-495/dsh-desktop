@@ -1,4 +1,5 @@
 //! DSH Runtime Manager — Tauri backend.
+mod desktop_approval;
 mod paths;
 mod plugins;
 mod runtime;
@@ -670,6 +671,9 @@ pub fn run() {
             });
 
             build_tray(app.handle())?;
+
+            // Desktop approval popup: wire the gui-webview bridge + popup window.
+            desktop_approval::wire(app.handle());
 
             // keep the tray menu in sync with runtime-status changes
             let app_ev = app.handle().clone();

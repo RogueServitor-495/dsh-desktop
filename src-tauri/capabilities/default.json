@@ -1,9 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the control window",
+  "description": "Capabilities for app windows (control panel, main DSH window, approval popup)",
   "windows": [
-    "control"
+    "control",
+    "gui",
+    "approval-popup"
   ],
   "permissions": [
     "core:default"
