@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// Injected into the DSH UI page (loading.html and the runtime UI): watches for
 /// a pending approval panel and relays it to/from Rust. Idempotent.
