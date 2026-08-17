@@ -1,6 +1,6 @@
 /* DSH Runtime Manager — control-panel frontend (no build step). */
-const invoke = window.__TAURI__.core.invoke;
-const listen = window.__TAURI__.event.listen;
+const invoke = window.__TAURI__ && window.__TAURI__.core ? window.__TAURI__.core.invoke : null;
+const listen = window.__TAURI__ && window.__TAURI__.event ? window.__TAURI__.event.listen : null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -292,9 +292,10 @@ async function refresh() {
     if (page.lines.length) {
       const box = $("logBox");
       const pinned = $("autoscroll").checked;
-      for (const l of page.lines) {
-        box.textContent += l.text + "\n";
-      }
+      // build the chunk first so we touch the DOM once (avoids O(n^2) reflow)
+      let chunk = "";
+      for (const l of page.lines) chunk += l.text + "\n";
+      box.textContent += chunk;
       lastSeq = page.end;
       if (pinned) box.scrollTop = box.scrollHeight;
     }
@@ -303,12 +304,20 @@ async function refresh() {
 
 // ── boot ────────────────────────────────────────────────────────────────────
 async function boot() {
+  if (!invoke) {
+    // Not running inside the Tauri shell: nothing can work, show the reason
+    // instead of a silent blank panel.
+    document.body.innerHTML =
+      '<div style="padding:28px;color:#ff5c5c;font:14px/1.6 sans-serif">' +
+      "管理面板无法初始化：页面没有运行在 Tauri 窗口内（window.__TAURI__ 不可用）。</div>";
+    return;
+  }
   // tabs
   document.querySelectorAll(".tab").forEach((t) => {
     t.addEventListener("click", () => switchTab(t.dataset.tab));
   });
 
-  await listen("runtime-status", () => refresh());
+  if (listen) await listen("runtime-status", () => refresh());
 
   $("btnStart").onclick = async () => {
     try {

@@ -58,10 +58,9 @@ pub struct Snapshot {
     pub bundle_info: String,
 }
 
-fn snapshot_of(app: &AppHandle, state: &State<'_, AppState>) -> Snapshot {
-    let settings = state.settings.lock().unwrap().clone();
+fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCore>>) -> Snapshot {
     let status = {
-        let g = state.core.lock().unwrap();
+        let g = core.lock().unwrap_or_else(|e| e.into_inner());
         runtime::snapshot(&g)
     };
     let node_res = paths::detect_node(settings.node_path.as_deref());
@@ -330,8 +329,28 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 // ── commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> Snapshot {
-    snapshot_of(&app, &state)
+async fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> Snapshot {
+    let settings = state.settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let settings_fb = settings.clone();
+    let core = state.core.clone();
+    let app_bg = app.clone();
+    tauri::async_runtime::spawn_blocking(move || snapshot_of(&app_bg, &settings, &core))
+        .await
+        .unwrap_or_else(|_| {
+            // task panicked (poisoned lock); return a coherent best-effort snapshot
+            let port = core.lock().unwrap_or_else(|e| e.into_inner()).port;
+            Snapshot {
+                status: runtime::snapshot(&core.lock().unwrap_or_else(|e| e.into_inner())),
+                settings: settings_fb,
+                node: "⚠ 异常".into(),
+                dsh: "⚠ 异常".into(),
+                gui_url: format!("http://127.0.0.1:{port}"),
+                autostart_enabled: false,
+                effective_cmd: "⚠ 任务异常".into(),
+                bundled: false,
+                bundle_info: String::new(),
+            }
+        })
 }
 
 #[tauri::command]
@@ -370,20 +389,28 @@ async fn restart_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<u
 }
 
 #[tauri::command]
-fn get_logs(state: State<'_, AppState>, after: u64) -> LogPage {
-    let (end, items) = runtime::logs_since(&state.core, after);
-    LogPage {
-        end,
-        lines: items
-            .into_iter()
-            .map(|(seq, text)| LogLine { seq, text })
-            .collect(),
-    }
+async fn get_logs(state: State<'_, AppState>, after: u64) -> LogPage {
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (end, items) = runtime::logs_since(&core, after);
+        LogPage {
+            end,
+            lines: items
+                .into_iter()
+                .map(|(seq, text)| LogLine { seq, text })
+                .collect(),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| LogPage { end: after, lines: Vec::new() })
 }
 
 #[tauri::command]
-fn clear_logs(state: State<'_, AppState>) -> u64 {
-    runtime::clear_logs(&state.core)
+async fn clear_logs(state: State<'_, AppState>) -> u64 {
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime::clear_logs(&core))
+        .await
+        .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -446,9 +473,16 @@ fn restart_after_plugin_change(app: &AppHandle, state: &State<'_, AppState>) {
 }
 
 #[tauri::command]
-fn list_plugins(state: State<'_, AppState>) -> Vec<plugins::PluginInfo> {
-    let profile = state.settings.lock().unwrap().profile.clone();
-    plugins::list_plugins(&profile)
+async fn list_plugins(state: State<'_, AppState>) -> Vec<plugins::PluginInfo> {
+    let profile = state
+        .settings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .profile
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || plugins::list_plugins(&profile))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -536,53 +570,100 @@ async fn set_plugin_enabled(
     Ok(())
 }
 
-#[tauri::command]
-fn get_runtime_info(state: State<'_, AppState>) -> plugins::RuntimeInfo {
-    let settings = state.settings.lock().unwrap().clone();
-    let profile = settings.profile.clone();
-    let dsh_version = (|| -> String {
-        let (Ok(node_p), Ok(dsh_p)) = (
-            paths::detect_node(settings.node_path.as_deref()),
-            paths::detect_dsh(settings.dsh_bin.as_deref()),
-        ) else {
-            return "未知".into();
-        };
-        let mut cmd = std::process::Command::new(node_p);
-        cmd.arg(dsh_p).arg("--version");
-        paths::hide_console(&mut cmd);
-        let out = match cmd.output() {
-            Ok(o) => o,
-            Err(_) => return "未知".into(),
-        };
-        if !out.status.success() {
-            return "未知".into();
+/// Run a command to completion with a hard timeout (returns None on spawn
+/// error or timeout). Prevents a hung child process from blocking forever.
+fn run_capture_timeout(
+    mut cmd: std::process::Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait().ok()? {
+            Some(_) => break,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    })();
-    let node_version = match paths::detect_node(settings.node_path.as_deref()) {
-        Ok(p) => {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.arg("--version");
-            paths::hide_console(&mut cmd);
-            cmd.output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|_| "未知".into())
-        }
-        Err(_) => "未知".into(),
-    };
-    let count = plugins::list_plugins(&profile).len();
-    let dir = plugins::profile_dir(&profile);
-    let overlay_path = plugins::overlay_path(&profile);
-    let overlay = overlay_path.is_file();
-    plugins::RuntimeInfo {
-        dsh_version,
-        node_version,
-        profile: profile.clone(),
-        profile_dir: dir.display().to_string(),
-        plugin_count: count,
-        overlay_path: overlay_path.display().to_string(),
-        overlay,
     }
+    child.wait_with_output().ok()
+}
+
+#[tauri::command]
+async fn get_runtime_info(state: State<'_, AppState>) -> plugins::RuntimeInfo {
+    let settings = state
+        .settings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let profile_fb = settings.profile.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = settings.profile.clone();
+        let timeout = std::time::Duration::from_secs(15);
+        let dsh_version = (|| -> String {
+            let (Ok(node_p), Ok(dsh_p)) = (
+                paths::detect_node(settings.node_path.as_deref()),
+                paths::detect_dsh(settings.dsh_bin.as_deref()),
+            ) else {
+                return "未知".into();
+            };
+            let mut cmd = std::process::Command::new(node_p);
+            cmd.arg(dsh_p).arg("--version");
+            paths::hide_console(&mut cmd);
+            let out = match run_capture_timeout(cmd, timeout) {
+                Some(o) => o,
+                None => return "未知".into(),
+            };
+            if !out.status.success() {
+                return "未知".into();
+            }
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        })();
+        let node_version = match paths::detect_node(settings.node_path.as_deref()) {
+            Ok(p) => {
+                let mut cmd = std::process::Command::new(&p);
+                cmd.arg("--version");
+                paths::hide_console(&mut cmd);
+                run_capture_timeout(cmd, timeout)
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "未知".into())
+            }
+            Err(_) => "未知".into(),
+        };
+        let count = plugins::list_plugins(&profile).len();
+        let dir = plugins::profile_dir(&profile);
+        let overlay_path = plugins::overlay_path(&profile);
+        let overlay = overlay_path.is_file();
+        plugins::RuntimeInfo {
+            dsh_version,
+            node_version,
+            profile: profile.clone(),
+            profile_dir: dir.display().to_string(),
+            plugin_count: count,
+            overlay_path: overlay_path.display().to_string(),
+            overlay,
+        }
+    })
+    .await
+    .unwrap_or_else(|_| plugins::RuntimeInfo {
+        dsh_version: "未知".into(),
+        node_version: "未知".into(),
+        profile: profile_fb.clone(),
+        profile_dir: plugins::profile_dir(&profile_fb).display().to_string(),
+        plugin_count: 0,
+        overlay_path: String::new(),
+        overlay: false,
+    })
 }
 
 // ── entry ────────────────────────────────────────────────────────────────────
@@ -597,7 +678,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let settings = settings::load(&data_dir);
             // Enable the built-in plugin-manager in the app overlay before any
-            // runtime start (idempotent; user rows are preserved).
+            // runtime start (idempotent, fast, user rows preserved).
             let _ = plugins::ensure_default_plugins(&settings.profile);
             let start_on_launch = settings.start_on_launch;
             let core = Arc::new(Mutex::new(RuntimeCore::default()));
