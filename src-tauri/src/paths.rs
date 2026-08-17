@@ -34,8 +34,9 @@ pub fn node_dir_name() -> String {
 /// Root of the bundled runtime (node + dsh + versions.json).
 ///
 /// Candidates, in order:
-/// - release layout: <exe_dir>/../Resources/runtime (macOS .app) or
-///   <exe_dir>/../runtime (Windows: binary + resources sit together)
+/// - release layout: <exe_dir>/../Resources/resources/runtime (macOS .app)
+///   or <exe_dir>/resources/runtime (Windows: Tauri's resource_dir() is the exe
+///   directory there, and bundle.resources keeps its `resources/...` prefix)
 /// - dev tree: src-tauri/resources/runtime (compile-time manifest dir)
 pub fn runtime_root() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -47,7 +48,11 @@ pub fn runtime_root() -> Option<PathBuf> {
                 candidates.push(contents.join("Resources").join("resources").join("runtime"));
             }
             #[cfg(windows)]
-            candidates.push(parent.join("runtime"));
+            {
+                candidates.push(parent.join("resources").join("runtime"));
+                // flat-layout fallback (older bundles / manual copies)
+                candidates.push(parent.join("runtime"));
+            }
         }
     }
     candidates.push(
