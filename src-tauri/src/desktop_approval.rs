@@ -76,10 +76,8 @@ pub fn wire(app: &AppHandle) {
     {
         let app = app.clone();
         app.listen("approval-pending", move |event| {
-            let value = event
-                .payload()
-                .and_then(|p| serde_json::from_str::<Value>(p).ok())
-                .unwrap_or_else(|| json!({}));
+            // tauri::Event::payload() returns &str directly (2.x)
+            let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             let _ = show_popup(&app, value);
         });
     }
@@ -98,10 +96,8 @@ pub fn wire(app: &AppHandle) {
     {
         let app = app.clone();
         app.listen("approval-popup-answer", move |event| {
-            let value = event
-                .payload()
-                .and_then(|p| serde_json::from_str::<Value>(p).ok())
-                .unwrap_or_else(|| json!({}));
+            // tauri::Event::payload() returns &str directly (2.x)
+            let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             if let Some(gui) = app.get_webview_window("gui") {
                 let _ = gui.emit("approval-answer", value);
                 let _ = gui.show();
