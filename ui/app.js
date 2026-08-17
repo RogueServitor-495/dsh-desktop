@@ -317,8 +317,6 @@ async function boot() {
     t.addEventListener("click", () => switchTab(t.dataset.tab));
   });
 
-  if (listen) await listen("runtime-status", () => refresh());
-
   $("btnStart").onclick = async () => {
     try {
       await call("start_runtime");
@@ -404,6 +402,14 @@ async function boot() {
   setInterval(refresh, 1500);
   refresh();
   refreshPlugins();
+
+  // Subscribe to runtime-status last and never let it block boot: even if the
+  // event system is slow/unavailable the panel still renders and polls.
+  if (listen) {
+    try {
+      await listen("runtime-status", () => refresh());
+    } catch (e) {}
+  }
 }
 
 boot();

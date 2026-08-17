@@ -40,14 +40,22 @@ struct PatchRow {
     disabled: Option<bool>,
 }
 
+/// Resolve the Harness home. Must mirror the runtime's own resolution (Node
+/// `os.homedir()`, i.e. USERPROFILE on Windows), otherwise the app and the dsh
+/// child disagree on where profiles live: DSH_HOME > USERPROFILE/HOME > ~/.dsh.
 pub fn dsh_home() -> PathBuf {
-    std::env::var("DSH_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".dsh"))
-                .unwrap_or_else(|_| PathBuf::from("~/.dsh"))
-        })
+    if let Ok(home) = std::env::var("DSH_HOME") {
+        return PathBuf::from(home);
+    }
+    // Windows: USERPROFILE (matches Node's os.homedir()); POSIX: HOME.
+    let home_dir = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if home_dir.is_empty() {
+        PathBuf::from("~/.dsh")
+    } else {
+        PathBuf::from(home_dir).join(".dsh")
+    }
 }
 
 pub fn profile_dir(profile: &str) -> PathBuf {
@@ -558,8 +566,17 @@ pub fn ensure_default_plugins(profile: &str) -> Result<(), String> {
             copy_dir(&bundled, &dest)?;
         }
     }
+    // Never create a duplicate loader entry: skip when dsh-plugin-manager is
+    // already registered in the profile's own patch layer (cordis.patch.yml)
+    // OR in the app overlay (manager.patch.yml). Otherwise the runtime fails
+    // to boot with "duplicate loader entry id: dsh-plugin-manager".
+    let dir = profile_dir(profile);
+    let already_in_profile = collect_rows(&dir.join("cordis.patch.yml")).iter().any(|r| {
+        r.id.as_deref() == Some("dsh-plugin-manager")
+            || r.name.as_deref() == Some("dsh-plugin-manager")
+    });
     let mut rows = overlay_rows(profile);
-    let already = rows.iter().any(|item| {
+    let already_in_overlay = rows.iter().any(|item| {
         item.as_mapping()
             .and_then(|m| m.get("insert"))
             .and_then(|v| v.as_sequence())
@@ -568,7 +585,7 @@ pub fn ensure_default_plugins(profile: &str) -> Result<(), String> {
                     .any(|s| s.as_mapping().map(|m| row_matches(m, "dsh-plugin-manager")).unwrap_or(false))
             })
     });
-    if already {
+    if already_in_profile || already_in_overlay {
         return Ok(());
     }
     let mut sub = serde_yaml::Mapping::new();
