@@ -15,6 +15,7 @@
 - **日志**：内存环形缓冲（4000 行）+ `runtime.log` 全量落盘，管理面板实时 tail
 - **托盘图标（菜单栏）**：状态行实时显示运行状态；左键点击回到 DSH 主界面；菜单项：显示 DSH 主界面、启动/停止/重启运行时、管理面板、开机自启（勾选）、退出
 - **插件管理**：列出已安装插件（名称/版本/描述/来源/启用状态）、通过 npm 包名 / git URL / tarball URL 导入、启用/禁用（bundle 层切换 `dsh.profile.bundles`，普通插件生成 app 托管的 patch overlay）、删除（pnpm remove + 自动清理 patch 行）
+- **内置 dsh-plugin-manager 插件**：默认随 App 内置并启用（vendored 源码在 `src-tauri/resources/plugins/dsh-plugin-manager/`，构建时打进运行时并自动写入 app overlay），打开 DSH 界面即可在「设置 → 插件」里使用插件管理面板（导入/启停/移除/更新/插件市场）；如需更新 vendored 副本，替换该目录后重新构建
 - **Runtime 信息展示**：dsh 版本、node 版本、profile 名称与目录、插件数量与启用数、插件覆盖层路径
 - **开机自启**：系统级登录自启（LaunchAgent）+ 可选"启动应用时自动启动运行时"
 - **内嵌 DSH 界面**：应用内窗口打开 `http://127.0.0.1:<port>`，或改用系统浏览器

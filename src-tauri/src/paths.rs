@@ -95,6 +95,19 @@ pub fn bundled_dsh() -> Option<PathBuf> {
     }
 }
 
+/// Bundled dsh-plugin-manager package dir inside the runtime, if present.
+/// The app copies this into a profile's node_modules on first run so the
+/// built-in plugin-manager resolves offline without a pnpm install.
+pub fn bundled_plugin_dir() -> Option<PathBuf> {
+    let root = runtime_root()?;
+    let p = root.join("dsh").join("node_modules").join("dsh-plugin-manager");
+    if p.join("package.json").is_file() {
+        Some(p)
+    } else {
+        None
+    }
+}
+
 /// Bundled pnpm executable dir (dsh/node_modules/.bin), used for plugin ops.
 pub fn bundled_pnpm_dir() -> Option<PathBuf> {
     let root = runtime_root()?;

@@ -15,7 +15,7 @@
  * Env overrides: BUNDLE_NODE_MAJOR (default 24 = active LTS), BUNDLE_DSH_VERSION.
  */
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, writeFile, rm, chmod } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, chmod, cp } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
@@ -123,7 +123,11 @@ await writeFile(
       private: true,
       version: "1.0.0",
       description: "Self-contained install of the DeepSeek Harness CLI + runtime deps",
-      dependencies: { "@deepseek-ai/dsh": DSH_VERSION },
+      dependencies: {
+        "@deepseek-ai/dsh": DSH_VERSION,
+        // built-in plugin-manager (vendored copy in src-tauri/resources/plugins)
+        "dsh-plugin-manager": "file:../../plugins/dsh-plugin-manager"
+      },
     },
     null,
     2
@@ -135,6 +139,19 @@ if (!dshInstalled) {
   run(NPM, ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir });
 } else {
   log("dsh install already present, keep");
+}
+
+// dsh-plugin-manager: replace npm's file: symlink with a real copy so the
+// bundled runtime stays self-contained (the vendored source lives outside
+// resources/runtime and is not shipped with the app).
+const pmVendored = path.join(ROOT, "src-tauri", "resources", "plugins", "dsh-plugin-manager");
+const pmBundled = path.join(dshDir, "node_modules", "dsh-plugin-manager");
+if (existsSync(pmVendored)) {
+  await rm(pmBundled, { recursive: true, force: true });
+  await cp(pmVendored, pmBundled, { recursive: true });
+  log("dsh-plugin-manager bundled (copy of vendored source)");
+} else {
+  log("WARN: vendored dsh-plugin-manager missing:", pmVendored);
 }
 
 // cross-arch native optional packages so the bundle works on both Apple Silicon

@@ -596,6 +596,9 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let settings = settings::load(&data_dir);
+            // Enable the built-in plugin-manager in the app overlay before any
+            // runtime start (idempotent; user rows are preserved).
+            let _ = plugins::ensure_default_plugins(&settings.profile);
             let start_on_launch = settings.start_on_launch;
             let core = Arc::new(Mutex::new(RuntimeCore::default()));
             {

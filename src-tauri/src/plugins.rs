@@ -525,6 +525,70 @@ pub fn remove_plugin(
     Ok(out)
 }
 
+/// Recursive directory copy (std-only; used to seed the built-in plugin).
+fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| format!("cannot create {}: {e}", dst.display()))?;
+    for entry in std::fs::read_dir(src).map_err(|e| format!("cannot read {}: {e}", src.display()))? {
+        let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().map_err(|e| format!("file type: {e}"))?.is_dir() {
+            copy_dir(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Ensure the built-in dsh-plugin-manager plugin is available and enabled:
+/// 1) copy the bundled package into the profile's node_modules so it resolves
+///    offline without a pnpm install (only when missing, never overwriting),
+/// 2) enable it via the app-owned overlay (manager.patch.yml, passed with
+///    --patch). Idempotent: existing overlay rows are preserved and the insert
+///    row is only added once, so user edits are never clobbered.
+pub fn ensure_default_plugins(profile: &str) -> Result<(), String> {
+    if let Some(bundled) = crate::paths::bundled_plugin_dir() {
+        let dest = profile_dir(profile).join("node_modules").join("dsh-plugin-manager");
+        if !dest.join("package.json").is_file() {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("cannot create profile node_modules: {e}"))?;
+            }
+            copy_dir(&bundled, &dest)?;
+        }
+    }
+    let mut rows = overlay_rows(profile);
+    let already = rows.iter().any(|item| {
+        item.as_mapping()
+            .and_then(|m| m.get("insert"))
+            .and_then(|v| v.as_sequence())
+            .map_or(false, |subs| {
+                subs.iter()
+                    .any(|s| s.as_mapping().map(|m| row_matches(m, "dsh-plugin-manager")).unwrap_or(false))
+            })
+    });
+    if already {
+        return Ok(());
+    }
+    let mut sub = serde_yaml::Mapping::new();
+    sub.insert(
+        serde_yaml::Value::String("id".into()),
+        serde_yaml::Value::String("dsh-plugin-manager".into()),
+    );
+    sub.insert(
+        serde_yaml::Value::String("name".into()),
+        serde_yaml::Value::String("dsh-plugin-manager".into()),
+    );
+    let mut insert_item = serde_yaml::Mapping::new();
+    insert_item.insert(
+        serde_yaml::Value::String("insert".into()),
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(sub)]),
+    );
+    rows.push(serde_yaml::Value::Mapping(insert_item));
+    write_overlay(profile, rows)
+}
+
 /// Line-based removal of patch rows referencing the target from a patch file,
 /// preserving comments and unrelated structure. Returns true when changed.
 fn remove_patch_rows_line_based(path: &Path, target: &str) -> Result<bool, String> {

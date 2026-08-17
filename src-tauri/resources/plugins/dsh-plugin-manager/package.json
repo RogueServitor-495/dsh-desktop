@@ -1,0 +1,21 @@
+{
+  "name": "dsh-plugin-manager",
+  "version": "0.1.0",
+  "description": "Plugin manager for dsh: manage installed plugins (enable/disable/remove) and import new plugins via git URL, npm package, tarball URL, or local path",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "lib"
+  ]
+}
