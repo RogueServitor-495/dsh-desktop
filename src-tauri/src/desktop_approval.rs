@@ -75,7 +75,7 @@ pub fn wire(app: &AppHandle) {
     // An approval appeared in the DSH UI -> show the popup.
     {
         let app = app.clone();
-        app.listen("approval-pending", move |event| {
+        app.clone().listen("approval-pending", move |event| {
             // tauri::Event::payload() returns &str directly (2.x)
             let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             let _ = show_popup(&app, value);
@@ -84,18 +84,18 @@ pub fn wire(app: &AppHandle) {
     // The approval was resolved in the DSH UI -> hide the popup.
     {
         let app = app.clone();
-        app.listen("approval-resolved", move |_event| hide_popup(&app));
+        app.clone().listen("approval-resolved", move |_event| hide_popup(&app));
     }
     // Popup auto-timeout -> just hide.
     {
         let app = app.clone();
-        app.listen("approval-popup-timeout", move |_event| hide_popup(&app));
+        app.clone().listen("approval-popup-timeout", move |_event| hide_popup(&app));
     }
     // Popup buttons -> forward the decision to the gui webview's bridge and
     // bring the DSH window to the front so the user sees it settle.
     {
         let app = app.clone();
-        app.listen("approval-popup-answer", move |event| {
+        app.clone().listen("approval-popup-answer", move |event| {
             // tauri::Event::payload() returns &str directly (2.x)
             let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             if let Some(gui) = app.get_webview_window("gui") {
