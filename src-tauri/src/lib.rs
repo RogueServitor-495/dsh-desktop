@@ -97,7 +97,7 @@ fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCor
     };
     Snapshot {
         status,
-        settings,
+        settings: settings.clone(),
         node,
         dsh,
         gui_url,
@@ -329,28 +329,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 // ── commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> Snapshot {
+async fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<Snapshot, String> {
     let settings = state.settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let settings_fb = settings.clone();
     let core = state.core.clone();
     let app_bg = app.clone();
     tauri::async_runtime::spawn_blocking(move || snapshot_of(&app_bg, &settings, &core))
         .await
-        .unwrap_or_else(|_| {
-            // task panicked (poisoned lock); return a coherent best-effort snapshot
-            let port = core.lock().unwrap_or_else(|e| e.into_inner()).port;
-            Snapshot {
-                status: runtime::snapshot(&core.lock().unwrap_or_else(|e| e.into_inner())),
-                settings: settings_fb,
-                node: "⚠ 异常".into(),
-                dsh: "⚠ 异常".into(),
-                gui_url: format!("http://127.0.0.1:{port}"),
-                autostart_enabled: false,
-                effective_cmd: "⚠ 任务异常".into(),
-                bundled: false,
-                bundle_info: String::new(),
-            }
-        })
+        .map_err(|e| format!("snapshot task failed: {e}"))
 }
 
 #[tauri::command]
@@ -389,7 +374,7 @@ async fn restart_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<u
 }
 
 #[tauri::command]
-async fn get_logs(state: State<'_, AppState>, after: u64) -> LogPage {
+async fn get_logs(state: State<'_, AppState>, after: u64) -> Result<LogPage, String> {
     let core = state.core.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (end, items) = runtime::logs_since(&core, after);
@@ -402,15 +387,15 @@ async fn get_logs(state: State<'_, AppState>, after: u64) -> LogPage {
         }
     })
     .await
-    .unwrap_or_else(|_| LogPage { end: after, lines: Vec::new() })
+    .map_err(|e| format!("logs task failed: {e}"))
 }
 
 #[tauri::command]
-async fn clear_logs(state: State<'_, AppState>) -> u64 {
+async fn clear_logs(state: State<'_, AppState>) -> Result<u64, String> {
     let core = state.core.clone();
     tauri::async_runtime::spawn_blocking(move || runtime::clear_logs(&core))
         .await
-        .unwrap_or(0)
+        .map_err(|e| format!("clear logs task failed: {e}"))
 }
 
 #[tauri::command]
@@ -473,7 +458,7 @@ fn restart_after_plugin_change(app: &AppHandle, state: &State<'_, AppState>) {
 }
 
 #[tauri::command]
-async fn list_plugins(state: State<'_, AppState>) -> Vec<plugins::PluginInfo> {
+async fn list_plugins(state: State<'_, AppState>) -> Result<Vec<plugins::PluginInfo>, String> {
     let profile = state
         .settings
         .lock()
@@ -482,7 +467,7 @@ async fn list_plugins(state: State<'_, AppState>) -> Vec<plugins::PluginInfo> {
         .clone();
     tauri::async_runtime::spawn_blocking(move || plugins::list_plugins(&profile))
         .await
-        .unwrap_or_default()
+        .map_err(|e| format!("plugin list task failed: {e}"))
 }
 
 #[tauri::command]
@@ -600,13 +585,12 @@ fn run_capture_timeout(
 }
 
 #[tauri::command]
-async fn get_runtime_info(state: State<'_, AppState>) -> plugins::RuntimeInfo {
+async fn get_runtime_info(state: State<'_, AppState>) -> Result<plugins::RuntimeInfo, String> {
     let settings = state
         .settings
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let profile_fb = settings.profile.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let profile = settings.profile.clone();
         let timeout = std::time::Duration::from_secs(15);
@@ -655,15 +639,7 @@ async fn get_runtime_info(state: State<'_, AppState>) -> plugins::RuntimeInfo {
         }
     })
     .await
-    .unwrap_or_else(|_| plugins::RuntimeInfo {
-        dsh_version: "未知".into(),
-        node_version: "未知".into(),
-        profile: profile_fb.clone(),
-        profile_dir: plugins::profile_dir(&profile_fb).display().to_string(),
-        plugin_count: 0,
-        overlay_path: String::new(),
-        overlay: false,
-    })
+    .map_err(|e| format!("runtime info task failed: {e}"))
 }
 
 // ── entry ────────────────────────────────────────────────────────────────────
