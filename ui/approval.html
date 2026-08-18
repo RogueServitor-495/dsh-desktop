@@ -4,33 +4,49 @@
 <meta charset="utf-8" />
 <title>需要审批</title>
 <style>
-:root { --bg:#161d28; --panel:#1d2636; --border:#2c3a4f; --text:#dbe4f0; --muted:#8b99ab; --amber:#ffb454; --green:#34c98f; --red:#ff5c5c; }
+:root {
+  --bg:#f7f8fa; --panel:#ffffff; --border:#d9dee6; --text:#1f2937; --muted:#6b7280;
+  --amber:#b45309; --accent:#2563eb; --red:#dc2626; --allowGrad:linear-gradient(180deg,#3b82f6,#2563eb); --allowBorder:#3b82f6;
+  color-scheme: light;
+}
+body[data-ds-dark-theme] {
+  --bg:#161d28; --panel:#1d2636; --border:#2c3a4f; --text:#dbe4f0; --muted:#8b99ab;
+  --amber:#ffb454; --accent:#4c9aff; --red:#ff5c5c; --allowGrad:linear-gradient(180deg,#2f6fd0,#2455a8); --allowBorder:#356fc0;
+  color-scheme: dark;
+}
 * { box-sizing:border-box; margin:0; padding:0; }
 html, body { height:100%; }
-body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; padding:12px 14px; display:flex; flex-direction:column; gap:10px; -webkit-user-select:none; user-select:none; }
-.head { display:flex; align-items:center; gap:8px; color:var(--amber); font-weight:600; font-size:14px; }
+body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; padding:0; display:flex; flex-direction:column; -webkit-user-select:none; user-select:none; }
+.head { display:flex; align-items:center; gap:8px; color:var(--amber); font-weight:600; font-size:14px; padding:10px 14px 6px; -webkit-app-region: drag; }
 .dot { width:9px; height:9px; border-radius:50%; background:var(--amber); box-shadow:0 0 8px var(--amber); flex:none; }
-.reason { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:9px 11px; color:var(--text); font-size:13px; flex:1; overflow:auto; word-break:break-all; }
-.cmd { font-family:Consolas,Consolas,monospace; font-size:12px; color:var(--muted); word-break:break-all; max-height:52px; overflow:auto; }
-.actions { display:flex; gap:8px; justify-content:flex-end; }
-button { appearance:none; border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:8px; padding:7px 18px; font:inherit; font-size:13px; cursor:pointer; transition:filter .15s; }
+.body { padding:0 14px 12px; display:flex; flex-direction:column; gap:8px; flex:1; min-height:0; }
+.reason { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:9px 11px; color:var(--text); font-size:13px; overflow:auto; word-break:break-all; flex:1; }
+.cmd { font-family:Consolas,monospace; font-size:12px; color:var(--muted); word-break:break-all; max-height:52px; overflow:auto; }
+.actions { display:flex; gap:8px; justify-content:flex-end; padding-top:2px; }
+button { appearance:none; border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:8px; padding:7px 18px; font:inherit; font-size:13px; cursor:pointer; transition:filter .15s; -webkit-app-region: no-drag; }
 button.reject:hover { background:color-mix(in srgb,var(--red) 16%,transparent); border-color:var(--red); }
-button.allow { background:linear-gradient(180deg,#2f6fd0,#2455a8); border-color:#356fc0; color:#fff; font-weight:600; }
+button.allow { background:var(--allowGrad); border-color:var(--allowBorder); color:#fff; font-weight:600; }
 button.allow:hover { filter:brightness(1.12); }
 </style>
 </head>
 <body>
   <div class="head"><span class="dot"></span>DSH 需要审批</div>
-  <div class="reason" id="reason">正在等待审批…</div>
-  <div class="cmd" id="command"></div>
-  <div class="actions">
-    <button class="reject" id="reject">拒绝</button>
-    <button class="allow" id="allow">允许一次</button>
+  <div class="body">
+    <div class="reason" id="reason">正在等待审批…</div>
+    <div class="cmd" id="command"></div>
+    <div class="actions">
+      <button class="reject" id="reject">拒绝</button>
+      <button class="allow" id="allow">允许一次</button>
+    </div>
   </div>
 <script>
 var emitEv = window.__TAURI__ && window.__TAURI__.event ? window.__TAURI__.event.emit : null;
 var listenEv = window.__TAURI__ && window.__TAURI__.event ? window.__TAURI__.event.listen : null;
 var timeoutId = null;
+function applyTheme(dark) {
+  if (dark) document.body.setAttribute('data-ds-dark-theme', '');
+  else document.body.removeAttribute('data-ds-dark-theme');
+}
 function scheduleHide() {
   clearTimeout(timeoutId);
   timeoutId = setTimeout(function () { if (emitEv) emitEv("approval-popup-timeout", {}); }, 45000);
@@ -41,12 +57,20 @@ document.getElementById("reject").addEventListener("click", function () {
 document.getElementById("allow").addEventListener("click", function () {
   if (emitEv) emitEv("approval-popup-answer", { outcome: "allowed-once" });
 });
-if (listenEv) listenEv("approval-popup-data", function (e) {
-  var d = e.payload || {};
-  document.getElementById("reason").textContent = d.headline || d.reason || "需要审批（详情见 DSH 窗口）";
-  document.getElementById("command").textContent = d.command || "";
-  scheduleHide();
-});
+if (listenEv) {
+  listenEv("approval-popup-data", function (e) {
+    var d = e.payload || {};
+    document.getElementById("reason").textContent = d.headline || d.reason || "需要审批（详情见 DSH 窗口）";
+    document.getElementById("command").textContent = d.command || "";
+    scheduleHide();
+  });
+  listenEv("approval-popup-theme", function (e) {
+    var d = e.payload || {};
+    applyTheme(!!d.dark);
+  });
+}
+// default to dark until the DSH theme arrives
+applyTheme(true);
 scheduleHide();
 </script>
 </body>

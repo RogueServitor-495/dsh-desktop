@@ -19,6 +19,7 @@ const BRIDGE_JS: &str = r#"(function () {
   window.__dshApprovalBridge = true;
   var KEY = '[data-approval-key]';
   var last = null;
+  var lastTheme = null;
   function panel() { return document.querySelector(KEY); }
   function emit(name, payload) {
     try {
@@ -36,6 +37,13 @@ const BRIDGE_JS: &str = r#"(function () {
     } else if (!key && last) {
       last = null;
       emit('approval-resolved', {});
+    }
+    // Follow the DSH light/dark theme (body[data-ds-dark-theme]); emit on change
+    // (lastTheme starts null so the current theme is reported once on load).
+    var dark = !!(document.body && document.body.hasAttribute('data-ds-dark-theme'));
+    if (dark !== lastTheme) {
+      lastTheme = dark;
+      emit('dsh-theme', { dark: dark });
     }
   }, 400);
   if (window.__TAURI__ && window.__TAURI__.event) {
@@ -91,6 +99,16 @@ pub fn wire(app: &AppHandle) {
         let app = app.clone();
         app.clone().listen("approval-popup-timeout", move |_event| hide_popup(&app));
     }
+    // DSH light/dark theme -> popup, so the popup follows the DSH setting.
+    {
+        let app = app.clone();
+        app.clone().listen("dsh-theme", move |event| {
+            let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            if let Some(popup) = app.get_webview_window("approval-popup") {
+                let _ = popup.emit("approval-popup-theme", value);
+            }
+        });
+    }
     // Popup buttons -> forward the decision to the gui webview's bridge and
     // bring the DSH window to the front so the user sees it settle.
     {
@@ -124,8 +142,27 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
         .ok()
 }
 
+/// Place the popup at the bottom-right of the monitor the main DSH window is
+/// on (16px margin), so it does not sit at the default top-left.
+fn position_bottom_right(app: &AppHandle, w: &WebviewWindow) {
+    let monitor = app
+        .get_webview_window("gui")
+        .and_then(|g| g.current_monitor().ok().flatten())
+        .or_else(|| w.current_monitor().ok().flatten());
+    if let Some(mon) = monitor {
+        let msize = *mon.size();
+        let scale = mon.scale_factor();
+        let wsize = w.outer_size().unwrap_or_default();
+        let margin = (16.0 * scale) as i32;
+        let x = (msize.width as i32 - wsize.width as i32 - margin).max(0);
+        let y = (msize.height as i32 - wsize.height as i32 - margin).max(0);
+        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
 fn show_popup(app: &AppHandle, value: Value) -> Result<(), String> {
     let w = ensure_popup(app).ok_or("cannot create approval popup window")?;
+    position_bottom_right(app, &w);
     let _ = w.emit("approval-popup-data", value);
     let _ = w.show();
     let _ = w.set_focus();
