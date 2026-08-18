@@ -672,6 +672,12 @@ pub fn run() {
 
             build_tray(app.handle())?;
 
+            // Make sure the main DSH window is visible and focused on launch.
+            if let Some(gui) = app.get_webview_window("gui") {
+                let _ = gui.show();
+                let _ = gui.set_focus();
+            }
+
             // Desktop approval popup: wire the gui-webview bridge + popup window.
             desktop_approval::wire(app.handle());
 
@@ -832,12 +838,13 @@ pub fn run() {
             open_control,
         ])
         .on_window_event(|window, event| {
-            // Client model: closing the main (GUI) window quits the app.
-            // The dsh runtime keeps running (own session) and is adopted on
-            // the next launch.
+            // Close-to-tray: the runtime manager keeps running in the background.
+            // Closing the main window hides it (the tray icon stays); reopen via
+            // the tray menu / click, and use 退出 to quit for real.
             if window.label() == "gui" {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    window.app_handle().exit(0);
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
             }
         })
