@@ -9,7 +9,9 @@
 
 use serde_json::{json, Value};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 /// Injected into the DSH UI page (loading.html and the runtime UI): watches for
 /// a pending approval panel and relays it to/from Rust. Idempotent.
@@ -65,6 +67,26 @@ const BRIDGE_JS: &str = r#"(function () {
       if (target && !target.disabled) target.click();
     });
   }
+  // External links (e.g. in chat messages or the plugin marketplace): open in
+  // the system browser instead of navigating the embedded webview away from the
+  // DSH UI. Capture phase so it runs before any page-level click handler.
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || e.defaultPrevented) return;
+    var href = a.getAttribute('href') || '';
+    if (!href || href.charAt(0) === '#' || /^(mailto:|tel:|javascript:)/i.test(href)) return;
+    var resolved = a.href;
+    if (!resolved) return;
+    var external = false;
+    try {
+      var u = new URL(resolved);
+      var here = new URL(window.location.href);
+      external = u.origin !== here.origin && (u.protocol === 'http:' || u.protocol === 'https:');
+    } catch (err) { external = false; }
+    if (!external) return;
+    e.preventDefault();
+    emit('open-external', { url: resolved });
+  }, true);
 })();"#;
 
 /// Set up the bridge injection loop and the popup event wiring.
@@ -85,25 +107,29 @@ pub fn wire(app: &AppHandle) {
         let app = app.clone();
         app.clone().listen("approval-pending", move |event| {
             // tauri::Event::payload() returns &str directly (2.x)
-            let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            let value =
+                serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             let _ = show_popup(&app, value);
         });
     }
     // The approval was resolved in the DSH UI -> hide the popup.
     {
         let app = app.clone();
-        app.clone().listen("approval-resolved", move |_event| hide_popup(&app));
+        app.clone()
+            .listen("approval-resolved", move |_event| hide_popup(&app));
     }
     // Popup auto-timeout -> just hide.
     {
         let app = app.clone();
-        app.clone().listen("approval-popup-timeout", move |_event| hide_popup(&app));
+        app.clone()
+            .listen("approval-popup-timeout", move |_event| hide_popup(&app));
     }
     // DSH light/dark theme -> popup, so the popup follows the DSH setting.
     {
         let app = app.clone();
         app.clone().listen("dsh-theme", move |event| {
-            let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            let value =
+                serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             if let Some(popup) = app.get_webview_window("approval-popup") {
                 let _ = popup.emit("approval-popup-theme", value);
             }
@@ -115,7 +141,8 @@ pub fn wire(app: &AppHandle) {
         let app = app.clone();
         app.clone().listen("approval-popup-answer", move |event| {
             // tauri::Event::payload() returns &str directly (2.x)
-            let value = serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            let value =
+                serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             if let Some(gui) = app.get_webview_window("gui") {
                 let _ = gui.emit("approval-answer", value);
                 let _ = gui.show();
@@ -124,22 +151,39 @@ pub fn wire(app: &AppHandle) {
             hide_popup(&app);
         });
     }
+    // A link clicked in the DSH UI -> open it in the system browser, never in
+    // the embedded webview.
+    {
+        let app = app.clone();
+        app.clone().listen("open-external", move |event| {
+            // tauri::Event::payload() returns &str directly (2.x)
+            let value =
+                serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            if let Some(url) = value.get("url").and_then(|u| u.as_str()) {
+                open_in_browser(url);
+            }
+        });
+    }
 }
 
 fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = app.get_webview_window("approval-popup") {
         return Some(w);
     }
-    WebviewWindowBuilder::new(app, "approval-popup", WebviewUrl::App("approval.html".into()))
-        .title("需要审批")
-        .inner_size(400.0, 230.0)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()
-        .ok()
+    WebviewWindowBuilder::new(
+        app,
+        "approval-popup",
+        WebviewUrl::App("approval.html".into()),
+    )
+    .title("需要审批")
+    .inner_size(400.0, 230.0)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .build()
+    .ok()
 }
 
 /// Place the popup at the bottom-right of the monitor the main DSH window is
@@ -172,5 +216,26 @@ fn show_popup(app: &AppHandle, value: Value) -> Result<(), String> {
 fn hide_popup(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("approval-popup") {
         let _ = w.hide();
+    }
+}
+
+/// Open a URL with the OS default browser, never inside the embedded webview.
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        // rundll32 url.dll,FileProtocolHandler is a GUI subsystem helper and
+        // opens the default handler without spawning a console window.
+        let _ = std::process::Command::new("rundll32")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
 }
