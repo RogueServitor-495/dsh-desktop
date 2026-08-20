@@ -8,6 +8,7 @@
 //! bridge, which clicks the real Allow/Reject button in the DSH UI.
 
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -21,7 +22,6 @@ const BRIDGE_JS: &str = r#"(function () {
   window.__dshApprovalBridge = true;
   var KEY = '[data-approval-key]';
   var last = null;
-  var lastTheme = null;
   function panel() { return document.querySelector(KEY); }
   function emit(name, payload) {
     try {
@@ -40,13 +40,13 @@ const BRIDGE_JS: &str = r#"(function () {
       last = null;
       emit('approval-resolved', {});
     }
-    // Follow the DSH light/dark theme (body[data-ds-dark-theme]); emit on change
-    // (lastTheme starts null so the current theme is reported once on load).
+    // Report the DSH light/dark theme (body[data-ds-dark-theme]) every tick:
+    // the popup is created lazily on the first approval, so a change-only emit
+    // can fire before the popup exists and never reach it. Periodic emission
+    // self-heals: the popup receives the current theme within ~400ms of its
+    // creation.
     var dark = !!(document.body && document.body.hasAttribute('data-ds-dark-theme'));
-    if (dark !== lastTheme) {
-      lastTheme = dark;
-      emit('dsh-theme', { dark: dark });
-    }
+    emit('dsh-theme', { dark: dark });
   }, 400);
   if (window.__TAURI__ && window.__TAURI__.event) {
     window.__TAURI__.event.listen('approval-answer', function (e) {
@@ -125,13 +125,31 @@ pub fn wire(app: &AppHandle) {
             .listen("approval-popup-timeout", move |_event| hide_popup(&app));
     }
     // DSH light/dark theme -> popup, so the popup follows the DSH setting.
+    // Remember the last observed theme and forward it whenever the popup exists;
+    // the popup window is created lazily, so a one-shot theme emit can predate it.
     {
         let app = app.clone();
         app.clone().listen("dsh-theme", move |event| {
             let value =
                 serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            if let Some(dark) = value.get("dark").and_then(|d| d.as_bool()) {
+                LAST_DARK.store(dark, Ordering::Relaxed);
+            }
             if let Some(popup) = app.get_webview_window("approval-popup") {
                 let _ = popup.emit("approval-popup-theme", value);
+            }
+        });
+    }
+    // The popup page loaded -> answer with the current theme immediately, so the
+    // first popup never sits in its pre-theme default.
+    {
+        let app = app.clone();
+        app.clone().listen("approval-popup-ready", move |_event| {
+            if let Some(popup) = app.get_webview_window("approval-popup") {
+                let _ = popup.emit(
+                    "approval-popup-theme",
+                    json!({ "dark": LAST_DARK.load(Ordering::Relaxed) }),
+                );
             }
         });
     }
@@ -176,7 +194,7 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
         WebviewUrl::App("approval.html".into()),
     )
     .title("需要审批")
-    .inner_size(400.0, 230.0)
+    .inner_size(340.0, 180.0)
     .resizable(false)
     .decorations(false)
     .always_on_top(true)
@@ -208,6 +226,10 @@ fn show_popup(app: &AppHandle, value: Value) -> Result<(), String> {
     let w = ensure_popup(app).ok_or("cannot create approval popup window")?;
     position_bottom_right(app, &w);
     let _ = w.emit("approval-popup-data", value);
+    let _ = w.emit(
+        "approval-popup-theme",
+        json!({ "dark": LAST_DARK.load(Ordering::Relaxed) }),
+    );
     let _ = w.show();
     let _ = w.set_focus();
     Ok(())
@@ -218,6 +240,11 @@ fn hide_popup(app: &AppHandle) {
         let _ = w.hide();
     }
 }
+
+/// Last DSH light/dark theme observed from the gui bridge. The popup window is
+/// created lazily on the first approval, so the current theme must be re-pushed
+/// when the popup appears (see the approval-popup-ready handshake).
+static LAST_DARK: AtomicBool = AtomicBool::new(false);
 
 /// Open a URL with the OS default browser, never inside the embedded webview.
 fn open_in_browser(url: &str) {

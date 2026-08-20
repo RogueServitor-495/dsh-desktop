@@ -17,13 +17,13 @@ body[data-ds-dark-theme] {
 * { box-sizing:border-box; margin:0; padding:0; }
 html, body { height:100%; }
 body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; padding:0; display:flex; flex-direction:column; -webkit-user-select:none; user-select:none; }
-.head { display:flex; align-items:center; gap:8px; color:var(--amber); font-weight:600; font-size:14px; padding:10px 14px 6px; -webkit-app-region: drag; }
+.head { display:flex; align-items:center; gap:8px; color:var(--amber); font-weight:600; font-size:13px; padding:8px 12px 4px; -webkit-app-region: drag; }
 .dot { width:9px; height:9px; border-radius:50%; background:var(--amber); box-shadow:0 0 8px var(--amber); flex:none; }
-.body { padding:0 14px 12px; display:flex; flex-direction:column; gap:8px; flex:1; min-height:0; }
-.reason { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:9px 11px; color:var(--text); font-size:13px; overflow:auto; word-break:break-all; flex:1; }
-.cmd { font-family:Consolas,monospace; font-size:12px; color:var(--muted); word-break:break-all; max-height:52px; overflow:auto; }
+.body { padding:0 12px 10px; display:flex; flex-direction:column; gap:7px; flex:1; min-height:0; }
+.reason { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:8px 10px; color:var(--text); font-size:12.5px; overflow:auto; word-break:break-all; flex:1; }
+.cmd { font-family:Consolas,monospace; font-size:11px; color:var(--muted); word-break:break-all; max-height:36px; overflow:auto; }
 .actions { display:flex; gap:8px; justify-content:flex-end; padding-top:2px; }
-button { appearance:none; border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:8px; padding:7px 18px; font:inherit; font-size:13px; cursor:pointer; transition:filter .15s; -webkit-app-region: no-drag; }
+button { appearance:none; border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:7px; padding:5px 13px; font:inherit; font-size:12.5px; cursor:pointer; transition:filter .15s; -webkit-app-region: no-drag; }
 button.reject:hover { background:color-mix(in srgb,var(--red) 16%,transparent); border-color:var(--red); }
 button.allow { background:var(--allowGrad); border-color:var(--allowBorder); color:#fff; font-weight:600; }
 button.allow:hover { filter:brightness(1.12); }
@@ -69,8 +69,8 @@ if (listenEv) {
     applyTheme(!!d.dark);
   });
 }
-// default to dark until the DSH theme arrives
-applyTheme(true);
+// default to light until the DSH theme arrives (ready handshake below)
+if (emitEv) emitEv("approval-popup-ready", {});
 scheduleHide();
 </script>
 </body>
