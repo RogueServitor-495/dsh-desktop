@@ -30,6 +30,14 @@ const CACHE = path.join(ROOT, ".runtime-cache");
 
 const NODE_MAJOR = process.env.BUNDLE_NODE_MAJOR || "24";
 const DSH_VERSION = process.env.BUNDLE_DSH_VERSION || "0.1.0-rc.6";
+// Known-good resolved tree, captured from a working build. @deepseek-ai/dsh
+// declares its dsh-* deps as ^0.1.0-rc.x ranges, so a plain install drifts to
+// the newest rc on every build — a newer rc broke the macOS install (node
+// SIGABRT in a postinstall). Pinning the whole tree via overrides makes the
+// bundle reproducible and immune to upstream rc drift.
+const PINNED_RUNTIME_VERSIONS = JSON.parse(
+  await readFile(path.join(ROOT, "scripts", "pinned-runtime-versions.json"), "utf8")
+);
 const DIST_BASE = "https://nodejs.org/dist";
 // Node's child_process cannot reliably exec bare .cmd/.bat names on Windows —
 // use the explicit npm.cmd there (GitHub Actions windows runners have it on PATH).
@@ -173,6 +181,7 @@ await writeFile(
         // built-in plugin-manager (vendored copy in src-tauri/resources/plugins)
         "dsh-plugin-manager": "file:../../plugins/dsh-plugin-manager"
       },
+      overrides: PINNED_RUNTIME_VERSIONS,
     },
     null,
     2
