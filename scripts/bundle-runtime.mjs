@@ -57,6 +57,51 @@ function spawnCapture(cmd, args) {
   }
   return execFileSync(cmd, args, { stdio: "pipe" });
 }
+// npm invocation. On unix, prefer the npm shipped inside the bundled node
+// (the node tarball carries lib/node_modules/npm; the app ships this node, so
+// the bundle is built with the same engine it will run under, independent of
+// whatever node/npm the CI runner provides — runner node builds have been seen
+// to SIGABRT mid-install on macOS). Windows node zips do not include npm, so
+// fall back to npm.cmd on PATH there.
+function npmInvocation() {
+  if (process.platform !== "win32") {
+    const bundled = [
+      path.join(RES, "node-darwin-arm64", "bin", "node"),
+      path.join(RES, "node-darwin-x64", "bin", "node"),
+    ].find((p) => existsSync(p));
+    if (bundled) {
+      const npmCli = path.join(
+        path.dirname(path.dirname(bundled)),
+        "lib",
+        "node_modules",
+        "npm",
+        "bin",
+        "npm-cli.js"
+      );
+      if (existsSync(npmCli)) {
+        log("npm via bundled node:", bundled);
+        return { cmd: bundled, args: [npmCli] };
+      }
+    }
+  }
+  return { cmd: NPM, args: [] };
+}
+// Retry a flaky install (transient native/runner crashes) before giving up.
+async function retryNpm(fn, attempts = 3, delayMs = 10000) {
+  let last;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      last = error;
+      if (i < attempts) {
+        log(`npm attempt ${i}/${attempts} failed (${error.message}); retrying in ${delayMs}ms`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw last;
+}
 async function fetchJson(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error("GET " + url + " -> " + r.status);
@@ -136,7 +181,10 @@ await writeFile(
 const dshInstalled = existsSync(path.join(dshDir, "node_modules", "@deepseek-ai", "dsh", "package.json"));
 if (!dshInstalled) {
   log("npm install @deepseek-ai/dsh@" + DSH_VERSION + " (omit dev)");
-  run(NPM, ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir });
+  const { cmd, args } = npmInvocation();
+  await retryNpm(() =>
+    run(cmd, [...args, "install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir })
+  );
 } else {
   log("dsh install already present, keep");
 }
@@ -173,9 +221,10 @@ const natives = [
   "@koromix/koffi-win32-x64",
 ].filter((pkg) => BUNDLE_PLATFORMS.some((tag) => pkg.includes(tag)));
 const resolvable = [];
+const { cmd: npmCmd, args: npmArgs } = npmInvocation();
 for (const pkg of natives) {
   try {
-    const v = spawnCapture(NPM, ["view", pkg, "version"]).toString().trim();
+    const v = spawnCapture(npmCmd, [...npmArgs, "view", pkg, "version"]).toString().trim();
     resolvable.push(pkg + "@" + v);
     log("native pkg", pkg, "->", v);
   } catch {
@@ -196,7 +245,9 @@ const allExtrasPresent = extras.every((spec) => {
 });
 if (!allExtrasPresent) {
   log("npm install cross-arch natives + pnpm");
-  run(NPM, ["install", "--force", "--omit=dev", "--no-save", "--no-audit", "--no-fund", "--no-update-notifier", ...extras], { cwd: dshDir });
+  await retryNpm(() =>
+    run(npmCmd, [...npmArgs, "install", "--force", "--omit=dev", "--no-save", "--no-audit", "--no-fund", "--no-update-notifier", ...extras], { cwd: dshDir })
+  );
 } else {
   log("cross-arch natives + pnpm already present, keep");
 }
