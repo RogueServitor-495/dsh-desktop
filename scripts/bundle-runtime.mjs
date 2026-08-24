@@ -30,10 +30,17 @@ const CACHE = path.join(ROOT, ".runtime-cache");
 
 const NODE_MAJOR = process.env.BUNDLE_NODE_MAJOR || "24";
 const DSH_VERSION = process.env.BUNDLE_DSH_VERSION || "0.1.0-rc.6";
-// The runtime dependency tree is pinned by the COMMITTED package-lock.json in
-// src-tauri/resources/runtime/dsh (generated from a known-good build). Plain
-// npm install would drift @deepseek-ai/dsh's ^0.1.0-rc.x deps to the newest rc
-// — a newer rc broke the macOS install (node SIGABRT in a postinstall).
+// The runtime dependency tree is pinned two ways that MUST stay in sync:
+//  1. overrides (below) pin the resolved versions in package.json, and
+//  2. the COMMITTED package-lock.json in src-tauri/resources/runtime/dsh is
+//     generated from exactly this package.json (overrides included) — npm ci
+//     installs it byte-for-byte. Plain npm install would drift @deepseek-ai/dsh's
+//     ^0.1.0-rc.x deps to the newest rc — a newer rc broke the macOS install.
+// Regenerate the lock whenever the versions change:
+//   cd src-tauri/resources/runtime/dsh && npm install --package-lock-only --omit=dev
+const PINNED_RUNTIME_VERSIONS = JSON.parse(
+  await readFile(path.join(ROOT, "scripts", "pinned-runtime-versions.json"), "utf8")
+);
 const DIST_BASE = "https://nodejs.org/dist";
 // Node's child_process cannot reliably exec bare .cmd/.bat names on Windows —
 // use the explicit npm.cmd there (GitHub Actions windows runners have it on PATH).
@@ -204,6 +211,8 @@ await writeFile(
         // built-in plugin-manager (vendored copy in src-tauri/resources/plugins)
         "dsh-plugin-manager": "file:../../plugins/dsh-plugin-manager"
       },
+      // must match the committed package-lock.json exactly (npm ci sync check)
+      overrides: PINNED_RUNTIME_VERSIONS,
     },
     null,
     2
