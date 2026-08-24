@@ -3,6 +3,9 @@ dist/
 target/
 icon-src.png
 .runtime-cache/
-src-tauri/resources/runtime/
+src-tauri/resources/runtime/*
+!src-tauri/resources/runtime/dsh/
+src-tauri/resources/runtime/dsh/*
+!src-tauri/resources/runtime/dsh/package-lock.json
 .DS_Store
 *.log

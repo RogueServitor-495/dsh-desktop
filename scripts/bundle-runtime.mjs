@@ -20,7 +20,7 @@ import { existsSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,14 +30,10 @@ const CACHE = path.join(ROOT, ".runtime-cache");
 
 const NODE_MAJOR = process.env.BUNDLE_NODE_MAJOR || "24";
 const DSH_VERSION = process.env.BUNDLE_DSH_VERSION || "0.1.0-rc.6";
-// Known-good resolved tree, captured from a working build. @deepseek-ai/dsh
-// declares its dsh-* deps as ^0.1.0-rc.x ranges, so a plain install drifts to
-// the newest rc on every build — a newer rc broke the macOS install (node
-// SIGABRT in a postinstall). Pinning the whole tree via overrides makes the
-// bundle reproducible and immune to upstream rc drift.
-const PINNED_RUNTIME_VERSIONS = JSON.parse(
-  await readFile(path.join(ROOT, "scripts", "pinned-runtime-versions.json"), "utf8")
-);
+// The runtime dependency tree is pinned by the COMMITTED package-lock.json in
+// src-tauri/resources/runtime/dsh (generated from a known-good build). Plain
+// npm install would drift @deepseek-ai/dsh's ^0.1.0-rc.x deps to the newest rc
+// — a newer rc broke the macOS install (node SIGABRT in a postinstall).
 const DIST_BASE = "https://nodejs.org/dist";
 // Node's child_process cannot reliably exec bare .cmd/.bat names on Windows —
 // use the explicit npm.cmd there (GitHub Actions windows runners have it on PATH).
@@ -93,6 +89,33 @@ function npmInvocation() {
     }
   }
   return { cmd: NPM, args: [] };
+}
+// Run npm capturing output. On failure, print the tail of stdout/stderr so
+// the CI log shows the real npm error instead of only "Command failed".
+function runNpm(cmd, args, opts = {}) {
+  log("$", cmd, ...args);
+  // Windows cannot spawn .cmd/.bat directly (CreateProcessW -> EINVAL).
+  const viaShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd);
+  const child = spawnSync(viaShell ? "cmd" : cmd, viaShell ? ["/c", cmd, ...args] : args, {
+    encoding: "utf8",
+    maxBuffer: 128 * 1024 * 1024,
+    ...opts,
+  });
+  const out = child.stdout || "";
+  const err = child.stderr || "";
+  if (out) process.stdout.write(out);
+  if (err) process.stderr.write(err);
+  if (child.error) {
+    log("npm spawn failed; stderr tail:\n" + err.split("\n").slice(-80).join("\n"));
+    throw child.error;
+  }
+  if (child.status !== 0) {
+    log("npm exited " + child.status + "; stderr tail:\n" + err.split("\n").slice(-80).join("\n"));
+    const e = new Error("npm exited with code " + child.status);
+    e.exitCode = child.status;
+    throw e;
+  }
+  return out;
 }
 // Retry a flaky install (transient native/runner crashes) before giving up.
 async function retryNpm(fn, attempts = 3, delayMs = 10000) {
@@ -181,7 +204,6 @@ await writeFile(
         // built-in plugin-manager (vendored copy in src-tauri/resources/plugins)
         "dsh-plugin-manager": "file:../../plugins/dsh-plugin-manager"
       },
-      overrides: PINNED_RUNTIME_VERSIONS,
     },
     null,
     2
@@ -189,10 +211,12 @@ await writeFile(
 );
 const dshInstalled = existsSync(path.join(dshDir, "node_modules", "@deepseek-ai", "dsh", "package.json"));
 if (!dshInstalled) {
-  log("npm install @deepseek-ai/dsh@" + DSH_VERSION + " (omit dev)");
   const { cmd, args } = npmInvocation();
+  const lockPath = path.join(dshDir, "package-lock.json");
+  const useCi = existsSync(lockPath);
+  log(useCi ? "npm ci @deepseek-ai/dsh@" + DSH_VERSION + " (omit dev, locked tree)" : "npm install @deepseek-ai/dsh@" + DSH_VERSION + " (omit dev)");
   await retryNpm(() =>
-    run(cmd, [...args, "install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir })
+    runNpm(cmd, [...args, useCi ? "ci" : "install", "--omit=dev", "--no-audit", "--no-fund", "--no-update-notifier"], { cwd: dshDir })
   );
 } else {
   log("dsh install already present, keep");
@@ -255,7 +279,7 @@ const allExtrasPresent = extras.every((spec) => {
 if (!allExtrasPresent) {
   log("npm install cross-arch natives + pnpm");
   await retryNpm(() =>
-    run(npmCmd, [...npmArgs, "install", "--force", "--omit=dev", "--no-save", "--no-audit", "--no-fund", "--no-update-notifier", ...extras], { cwd: dshDir })
+    runNpm(npmCmd, [...npmArgs, "install", "--force", "--omit=dev", "--no-save", "--no-package-lock", "--no-audit", "--no-fund", "--no-update-notifier", ...extras], { cwd: dshDir })
   );
 } else {
   log("cross-arch natives + pnpm already present, keep");
