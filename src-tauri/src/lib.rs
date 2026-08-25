@@ -685,7 +685,7 @@ async fn kernel_list(state: State<'_, AppState>) -> Result<kernels::KernelList, 
 async fn kernel_registry() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(kernels::registry_versions)
         .await
-        .map_err(|e| format!("registry task failed: {e}"))
+        .map_err(|e| format!("registry task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -693,7 +693,7 @@ async fn kernel_install(state: State<'_, AppState>, version: String) -> Result<S
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || kernels::install_kernel(&data_dir, &version))
         .await
-        .map_err(|e| format!("kernel install task failed: {e}"))
+        .map_err(|e| format!("kernel install task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -708,7 +708,7 @@ async fn kernel_delete(state: State<'_, AppState>, version: String) -> Result<()
         kernels::delete_kernel(&data_dir, &version, settings.kernel.as_deref())
     })
     .await
-    .map_err(|e| format!("kernel delete task failed: {e}"))
+    .map_err(|e| format!("kernel delete task failed: {e}"))?
 }
 
 /// Switch the active kernel (None = bundled runtime), persist, and restart the
