@@ -40,6 +40,10 @@
       <svg viewBox="0 0 24 24" width="15" height="15"><path d="M14.5 3.5l6 6-10 10H4.5v-6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
       插件管理
     </button>
+    <button class="tab" data-tab="kernels">
+      <svg viewBox="0 0 24 24" width="15" height="15"><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      内核与更新
+    </button>
     <button class="tab" data-tab="logs">
       <svg viewBox="0 0 24 24" width="15" height="15"><path d="M4 4h16v16H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 9l4 3-4 3M13 15h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       运行日志
@@ -196,6 +200,43 @@
         <p class="hint" id="pluginHint">导入后若运行时正在运行将自动重启以生效；非 dsh.bundle 插件导入后需在此启用（生成 patch 行）</p>
         <div id="pluginList" class="plugin-list"></div>
       </section>
+    </section>
+
+    <!-- ── 内核与更新 ── -->
+    <section class="tab-page" id="tab-kernels">
+      <div class="grid2">
+        <section class="card">
+          <div class="section-head">
+            <h2 class="card-title">dsh 内核版本</h2>
+            <div class="runtime-info" id="kernelCurrent">—</div>
+          </div>
+          <div class="import-bar">
+            <select id="kernelVersionSelect" class="kernel-select">
+              <option value="">点击「可用版本」加载…</option>
+            </select>
+            <button id="btnInstallKernel" class="btn primary">安装</button>
+            <button id="btnKernelRegistry" class="btn mini">可用版本</button>
+          </div>
+          <p class="hint">内核安装在应用数据目录（kernels/&lt;版本&gt;），复用 App 内置 node，无需系统 Node.js；安装/切换后需重启运行时生效</p>
+          <div id="kernelList" class="plugin-list"></div>
+        </section>
+
+        <section class="card">
+          <h2 class="card-title">桌面版</h2>
+          <dl class="kv">
+            <div><dt>当前版本</dt><dd id="appVersion">—</dd></div>
+            <div><dt>最新发布</dt><dd id="latestVersion">—</dd></div>
+            <div><dt>发布时间</dt><dd id="latestDate">—</dd></div>
+            <div><dt>运行时组件</dt><dd class="mono" id="runtimeComponents">—</dd></div>
+          </dl>
+          <div class="cmd-actions">
+            <button id="btnCheckUpdate" class="btn">检查更新</button>
+            <button id="btnOpenReleases" class="btn accent">下载页面</button>
+          </div>
+          <p class="toast" id="updateToast"></p>
+          <p class="hint">版本号规范：v主.次.修订（SemVer），见仓库 VERSIONING.md；内核/内置运行时版本由仓库锁定文件固定</p>
+        </section>
+      </div>
     </section>
 
     <!-- ── 运行日志 ── -->

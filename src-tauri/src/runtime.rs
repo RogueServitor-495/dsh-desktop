@@ -241,8 +241,12 @@ fn tcp_ok(port: u16) -> bool {
 }
 
 pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Settings) -> Result<u32, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
     let node = paths::detect_node(settings.node_path.as_deref())?;
-    let dsh = paths::detect_dsh(settings.dsh_bin.as_deref())?;
+    let dsh = paths::detect_dsh(settings.dsh_bin.as_deref(), settings.kernel.as_deref(), &data_dir)?;
 
     let mut g = core.lock().unwrap();
     if g.child.is_some() {
@@ -300,7 +304,7 @@ pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Setting
     cmd.current_dir(&workspace)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("PATH", paths::child_path());
+        .env("PATH", paths::child_path_for(settings.kernel.as_deref(), &data_dir));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

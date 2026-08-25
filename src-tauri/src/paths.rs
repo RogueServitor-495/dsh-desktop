@@ -113,35 +113,87 @@ pub fn bundled_plugin_dir() -> Option<PathBuf> {
     }
 }
 
-/// Bundled pnpm executable dir (dsh/node_modules/.bin), used for plugin ops.
-pub fn bundled_pnpm_dir() -> Option<PathBuf> {
-    let root = runtime_root()?;
-    let p = root.join("dsh").join("node_modules").join(".bin");
-    if p.is_dir() {
-        Some(p)
-    } else {
-        None
-    }
-}
-
-/// The pnpm executable inside the bundled .bin dir (pnpm on unix, pnpm.cmd on Windows).
-pub fn bundled_pnpm_bin() -> Option<PathBuf> {
-    let dir = bundled_pnpm_dir()?;
-    #[cfg(windows)]
-    let p = dir.join("pnpm.cmd");
-    #[cfg(not(windows))]
-    let p = dir.join("pnpm");
-    if p.is_file() {
-        Some(p)
-    } else {
-        None
-    }
-}
-
 /// Raw content of the bundled versions.json (node/dsh versions for the UI).
 pub fn bundled_versions() -> Option<String> {
     let root = runtime_root()?;
     std::fs::read_to_string(root.join("versions.json")).ok()
+}
+
+// ── user-managed kernels ─────────────────────────────────────────────────────
+// Kernels installed from the manager panel live under <data_dir>/kernels/<v>
+// as self-contained dsh installs; they share the node binary bundled with the
+// app. settings.kernel selects the active one (None = bundled runtime).
+
+/// Root dir of user-managed kernels.
+pub fn kernels_root(data_dir: &Path) -> PathBuf {
+    data_dir.join("kernels")
+}
+
+/// Install dir of one user-managed kernel version.
+pub fn kernel_dir(data_dir: &Path, version: &str) -> PathBuf {
+    kernels_root(data_dir).join(version)
+}
+
+/// dsh bin.js inside a user-managed kernel, when that kernel is installed.
+pub fn kernel_dsh_bin(data_dir: &Path, version: &str) -> Option<PathBuf> {
+    let p = kernel_dir(data_dir, version)
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join("dsh")
+        .join("lib")
+        .join("bin.js");
+    if p.is_file() { Some(p) } else { None }
+}
+
+/// npm-cli.js shipped next to the bundled node — used to install kernels
+/// without requiring any system Node.js. Windows node zips carry npm under
+/// <dir>/node_modules/npm; unix tarballs under <dir>/lib/node_modules/npm.
+pub fn bundled_npm_cli() -> Option<PathBuf> {
+    let root = runtime_root()?;
+    let nd = root.join(node_dir_name());
+    #[cfg(windows)]
+    let p = nd.join("node_modules").join("npm").join("bin").join("npm-cli.js");
+    #[cfg(not(windows))]
+    let p = nd.join("lib").join("node_modules").join("npm").join("bin").join("npm-cli.js");
+    if p.is_file() { Some(p) } else { None }
+}
+
+/// node_modules/.bin dirs that should sit first on the child PATH: the active
+/// kernel's (when one is selected), then the bundled runtime's.
+pub fn bin_dirs(kernel: Option<&str>, data_dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(v) = kernel {
+        let v = v.trim();
+        if !v.is_empty() {
+            let dir = kernel_dir(data_dir, v).join("node_modules").join(".bin");
+            if dir.is_dir() {
+                out.push(dir);
+            }
+        }
+    }
+    if let Some(root) = runtime_root() {
+        let dir = root.join("dsh").join("node_modules").join(".bin");
+        if dir.is_dir() {
+            out.push(dir);
+        }
+    }
+    out
+}
+
+/// pnpm executable for plugin operations: prefer the active kernel's copy,
+/// fall back to the bundled runtime's.
+pub fn pnpm_bin(kernel: Option<&str>, data_dir: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let name = "pnpm.cmd";
+    #[cfg(not(windows))]
+    let name = "pnpm";
+    for dir in bin_dirs(kernel, data_dir) {
+        let p = dir.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// Apply Windows console suppression to a child process so helper subprocesses
@@ -277,14 +329,23 @@ pub fn detect_node(explicit: Option<&str>) -> Result<PathBuf, String> {
     Err("node 未找到 — App 内置运行时缺失，或请在设置中指定 node 路径".into())
 }
 
-/// Find dsh's bin.js: explicit path, bundled runtime, PATH, then the npx cache.
-pub fn detect_dsh(explicit: Option<&str>) -> Result<PathBuf, String> {
+/// Find dsh's bin.js: explicit path, selected kernel, bundled runtime, PATH,
+/// then the npx cache.
+pub fn detect_dsh(explicit: Option<&str>, kernel: Option<&str>, data_dir: &Path) -> Result<PathBuf, String> {
     if let Some(p) = explicit {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Ok(p);
         }
         return Err(format!("dsh bin.js not found: {}", p.display()));
+    }
+    if let Some(v) = kernel {
+        let v = v.trim();
+        if !v.is_empty() {
+            if let Some(p) = kernel_dsh_bin(data_dir, v) {
+                return Ok(p);
+            }
+        }
     }
     if let Some(b) = bundled_dsh() {
         return Ok(b);
@@ -318,18 +379,21 @@ pub fn detect_dsh(explicit: Option<&str>) -> Result<PathBuf, String> {
     Err("dsh 未找到 — App 内置运行时缺失，或请设置 dsh 路径".into())
 }
 
-/// PATH for the child: bundled runtime bins first, then the current env, then
-/// common tool dirs so dsh's subprocesses (node-pty, npm, pnpm) resolve.
-pub fn child_path() -> String {
+/// PATH for the child: active-kernel + bundled runtime bins first, then the
+/// current env, then common tool dirs so dsh's subprocesses (node-pty, npm,
+/// pnpm) resolve.
+pub fn child_path_for(kernel: Option<&str>, data_dir: &Path) -> String {
     let sep = if cfg!(windows) { ";" } else { ":" };
     let mut dirs: Vec<String> = Vec::new();
+    for d in bin_dirs(kernel, data_dir) {
+        dirs.push(d.display().to_string());
+    }
     if let Some(root) = runtime_root() {
         let nd = root.join(node_dir_name());
         #[cfg(windows)]
         dirs.push(nd.display().to_string());
         #[cfg(not(windows))]
         dirs.push(nd.join("bin").display().to_string());
-        dirs.push(root.join("dsh").join("node_modules").join(".bin").display().to_string());
     }
     if let Ok(p) = std::env::var("PATH") {
         dirs.extend(p.split(sep).map(|s| s.to_string()));
@@ -361,4 +425,9 @@ pub fn child_path() -> String {
         }
     }
     dirs.join(sep)
+}
+
+/// child_path() with no kernel selected (bundled runtime only).
+pub fn child_path() -> String {
+    child_path_for(None, Path::new(""))
 }

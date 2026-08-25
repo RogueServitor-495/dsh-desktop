@@ -178,7 +178,7 @@ pub fn wire(app: &AppHandle) {
             let value =
                 serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
             if let Some(url) = value.get("url").and_then(|u| u.as_str()) {
-                open_in_browser(url);
+                let _ = open_in_browser(url);
             }
         });
     }
@@ -247,22 +247,31 @@ fn hide_popup(app: &AppHandle) {
 static LAST_DARK: AtomicBool = AtomicBool::new(false);
 
 /// Open a URL with the OS default browser, never inside the embedded webview.
-fn open_in_browser(url: &str) {
+/// Public so the manager panel's release links can reuse it.
+pub fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         // rundll32 url.dll,FileProtocolHandler is a GUI subsystem helper and
         // opens the default handler without spawning a console window.
-        let _ = std::process::Command::new("rundll32")
+        std::process::Command::new("rundll32")
             .arg("url.dll,FileProtocolHandler")
             .arg(url)
-            .spawn();
+            .spawn()
+            .map_err(|e| format!("open browser failed: {e}"))?;
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(url).spawn();
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open browser failed: {e}"))?;
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open browser failed: {e}"))?;
     }
+    Ok(())
 }

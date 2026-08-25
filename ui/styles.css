@@ -245,6 +245,19 @@ body {
 .switch input:checked + .track::after { transform: translateX(17px); }
 .plugin-empty { color: var(--muted); padding: 18px; text-align: center; }
 
+/* ── kernels & updates ──────────────────────────────────── */
+.kernel-select {
+  flex: 1; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 9px 12px; font-size: 13px; min-width: 0;
+}
+.kernel-select:focus { outline: none; border-color: var(--accent); }
+.kernel-row .plugin-name .lock { font-size: 11px; }
+.badge.active { color: var(--green); border-color: rgba(52,201,143,.5); }
+.badge.bundled { color: var(--accent); border-color: rgba(76,154,255,.5); }
+.upd-ok { color: var(--green); }
+.upd-new { color: var(--amber); font-weight: 600; }
+
 /* ── logs ───────────────────────────────────────────────── */
 .log-card { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .logbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

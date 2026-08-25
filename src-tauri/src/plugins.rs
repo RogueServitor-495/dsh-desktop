@@ -258,12 +258,12 @@ pub fn list_plugins(profile: &str) -> Vec<PluginInfo> {
     out
 }
 
-/// Ensure pnpm is resolvable: prefer the bundled pnpm shipped inside the app
-/// (works with the bundled node, no system Node needed), then PATH, else create
-/// an npx shim so the dsh plugin forwarder finds a pnpm binary.
-/// Returns extra PATH entries to prepend.
-fn ensure_pnpm(data_dir: &Path) -> Result<Vec<String>, String> {
-    if let Some(p) = crate::paths::bundled_pnpm_bin() {
+/// Ensure pnpm is resolvable: prefer the active kernel's / the bundled pnpm
+/// shipped inside the app (works with the bundled node, no system Node needed),
+/// then PATH, else create an npx shim so the dsh plugin forwarder finds a pnpm
+/// binary. Returns extra PATH entries to prepend.
+fn ensure_pnpm(data_dir: &Path, kernel: Option<&str>) -> Result<Vec<String>, String> {
+    if let Some(p) = crate::paths::pnpm_bin(kernel, data_dir) {
         let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
         return Ok(vec![dir.display().to_string()]);
     }
@@ -304,9 +304,10 @@ pub fn run_plugin_op(
     dsh_bin: &Path,
     pnpm_args: &[String],
     cwd: &Path,
+    kernel: Option<&str>,
 ) -> Result<String, String> {
-    let shim_dirs = ensure_pnpm(data_dir)?;
-    let base_path = crate::paths::child_path();
+    let shim_dirs = ensure_pnpm(data_dir, kernel)?;
+    let base_path = crate::paths::child_path_for(kernel, data_dir);
     let full_path = if shim_dirs.is_empty() {
         base_path
     } else {
@@ -524,9 +525,10 @@ pub fn remove_plugin(
     node: &Path,
     dsh_bin: &Path,
     cwd: &Path,
+    kernel: Option<&str>,
 ) -> Result<String, String> {
     let args = vec!["remove".to_string(), name.to_string(), "-w".to_string()];
-    let out = run_plugin_op(data_dir, profile, node, dsh_bin, &args, cwd)?;
+    let out = run_plugin_op(data_dir, profile, node, dsh_bin, &args, cwd, kernel)?;
     let _ = remove_overlay_rows(profile, name);
     let profile_patch = profile_dir(profile).join("cordis.patch.yml");
     let _ = remove_patch_rows_line_based(&profile_patch, name);

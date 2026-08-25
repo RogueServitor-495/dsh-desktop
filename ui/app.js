@@ -124,10 +124,155 @@ function renderStatus(s) {
 function renderOverviewEnv() {
   if (!snapshot) return;
   $("ovWorkspace").textContent = snapshot.settings.workspace || "—";
+  const appV = $("appVersion");
+  if (appV && snapshot.appVersion) appV.textContent = snapshot.appVersion;
+  const rc = $("runtimeComponents");
+  if (rc && snapshot.bundleInfo) rc.textContent = snapshot.bundleInfo;
   if (!rtInfo) return;
-  $("ovDshVersion").textContent = rtInfo.dshVersion;
+  const kernelBadge = snapshot.kernel ? "（内核 " + snapshot.kernel + "）" : "";
+  $("ovDshVersion").textContent = rtInfo.dshVersion + kernelBadge;
   $("ovNodeVersion").textContent = rtInfo.nodeVersion;
   $("ovProfile").textContent = rtInfo.profile;
+}
+
+// ── kernels & desktop updates ───────────────────────────────────────────────
+let kernelData = null;
+
+function renderKernels() {
+  if (!kernelData) return;
+  const cur = $("kernelCurrent");
+  if (cur) {
+    cur.innerHTML = kernelData.bundledActive
+      ? "当前使用 <b>内置运行时</b> · dsh <b>" + escapeHtml(kernelData.bundledVersion) + "</b>"
+      : "当前使用内核 <b>" + escapeHtml(kernelData.selected || "?") + "</b>（内置: dsh " + escapeHtml(kernelData.bundledVersion) + "）";
+  }
+  const list = $("kernelList");
+  if (!list) return;
+  list.innerHTML = "";
+  // bundled row
+  const bRow = document.createElement("div");
+  bRow.className = "plugin-row kernel-row";
+  bRow.innerHTML =
+    '<div class="plugin-main"><div class="plugin-name">内置运行时' +
+    ' <span class="plugin-ver">dsh ' + escapeHtml(kernelData.bundledVersion) + "</span>" +
+    (kernelData.bundledActive ? ' <span class="badge active">使用中</span>' : ' <span class="badge bundled">App 随附</span>') +
+    '</div><div class="plugin-desc">随 App 分发的锁定版本（仓库 lock 固定，最稳定）</div></div>' +
+    (kernelData.bundledActive ? "" : '<button class="btn mini" data-kernel-use="">切换到内置</button>');
+  list.appendChild(bRow);
+  if (!kernelData.kernels.length) {
+    const empty = document.createElement("div");
+    empty.className = "plugin-empty";
+    empty.textContent = "还没有安装其他内核 — 从上方选择版本安装";
+    list.appendChild(empty);
+  }
+  for (const k of kernelData.kernels) {
+    const row = document.createElement("div");
+    row.className = "plugin-row kernel-row";
+    row.innerHTML =
+      '<div class="plugin-main"><div class="plugin-name">dsh <span class="plugin-ver">' + escapeHtml(k.version) + "</span>" +
+      (k.active ? ' <span class="badge active">使用中</span>' : "") +
+      (k.installed ? "" : ' <span class="badge off">不完整</span>') +
+      '</div><div class="plugin-src">' + escapeHtml(k.dir) + "</div></div>" +
+      (k.active ? "" : '<button class="btn mini" data-kernel-use="' + escapeHtml(k.version) + '">启用</button>') +
+      '<button class="btn mini danger" data-kernel-del="' + escapeHtml(k.version) + '">删除</button>';
+    list.appendChild(row);
+  }
+  list.querySelectorAll("[data-kernel-use]").forEach((b) => {
+    b.onclick = async () => {
+      const v = b.dataset.kernelUse || null;
+      try {
+        await call("set_kernel", { version: v });
+        toast(v ? "已切换到内核 " + v + "（运行时将自动重启）" : "已切换回内置运行时（运行时将自动重启）", true);
+        refreshKernels();
+        refreshPlugins();
+      } catch (e) {}
+    };
+  });
+  list.querySelectorAll("[data-kernel-del]").forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm("确定删除内核 " + b.dataset.kernelDel + " 吗？将移除其全部文件")) return;
+      try {
+        await call("kernel_delete", { version: b.dataset.kernelDel });
+        toast("内核已删除", true);
+        refreshKernels();
+      } catch (e) {}
+    };
+  });
+}
+
+async function refreshKernels() {
+  try {
+    kernelData = await invoke("kernel_list");
+    renderKernels();
+  } catch (e) {
+    const list = $("kernelList");
+    if (list) list.innerHTML = '<div class="plugin-empty">内核信息不可用：' + escapeHtml(String(e)) + "</div>";
+  }
+}
+
+function updToast(msg, ok) {
+  const t = $("updateToast");
+  if (!t) return;
+  t.textContent = msg;
+  t.style.color = ok ? "var(--green)" : "var(--red)";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => (t.textContent = ""), 6000);
+}
+
+// compare two semver-ish strings ("1.2.3", "0.1.0-rc.6"): returns >0 if a is newer
+function cmpVer(a, b) {
+  const parse = (v) => {
+    const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.*))?$/.exec(v.replace(/^v/, ""));
+    if (!m) return null;
+    const rc = m[4] ? m[4].split(".").map((x) => (/^\d+$/.test(x) ? +x : x)) : null;
+    return [ +m[1], +m[2], +m[3], rc ];
+  };
+  const A = parse(a), B = parse(b);
+  if (!A || !B) return String(a).localeCompare(String(b));
+  for (let i = 0; i < 3; i++) {
+    if (A[i] !== B[i]) return A[i] - B[i];
+  }
+  if (!A[3] && !B[3]) return 0;
+  if (!A[3]) return 1;   // release > pre-release
+  if (!B[3]) return -1;
+  for (let i = 0; i < Math.max(A[3].length, B[3].length); i++) {
+    const x = A[3][i], y = B[3][i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (typeof x === "number" && typeof y === "number") { if (x !== y) return x - y; }
+    else { const s = String(x).localeCompare(String(y)); if (s) return s; }
+  }
+  return 0;
+}
+
+async function checkDesktopUpdate() {
+  const latest = $("latestVersion"), date = $("latestDate");
+  if (!latest) return;
+  latest.textContent = "检查中…";
+  date.textContent = "—";
+  try {
+    const res = await fetch("https://api.github.com/repos/RogueServitor-495/dsh-desktop/releases/latest", {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const rel = await res.json();
+    const tag = (rel.tag_name || "").replace(/^v/, "");
+    latest.textContent = rel.html_url ? "v" + tag : tag;
+    if (rel.published_at) date.textContent = new Date(rel.published_at).toLocaleString();
+    const cur = snapshot && snapshot.appVersion ? snapshot.appVersion : "";
+    if (!tag || !cur) {
+      updToast("无法比较版本", false);
+    } else if (cmpVer(tag, cur) > 0) {
+      latest.className = "upd-new";
+      updToast("有新版本 v" + tag + "（当前 v" + cur + "）— 点击「下载页面」获取", true);
+    } else {
+      latest.className = "upd-ok";
+      updToast("已是最新版本（v" + cur + "）", true);
+    }
+  } catch (e) {
+    latest.textContent = "检查失败";
+    updToast("更新检查失败: " + e, false);
+  }
 }
 
 // ── settings / launch args ──────────────────────────────────────────────────
@@ -175,6 +320,8 @@ function collectSettings() {
     profile: $("profile").value.trim() || "web",
     nodePath: $("nodePath").value.trim() || null,
     dshBin: $("dshBin").value.trim() || null,
+    // kernel selection is managed on the 内核与更新 tab — preserve it on save
+    kernel: (snapshot && snapshot.settings && snapshot.settings.kernel) || null,
     startOnLaunch: $("startOnLaunch").checked,
     guiInApp: seg ? seg.dataset.mode === "true" : true,
   };
@@ -366,6 +513,46 @@ async function boot() {
       refreshPlugins();
     } catch (e) {}
   };
+  // kernels & updates
+  $("btnKernelRegistry").onclick = async () => {
+    const sel = $("kernelVersionSelect");
+    sel.innerHTML = '<option value="">查询中…</option>';
+    try {
+      const versions = await call("kernel_registry");
+      if (!versions.length) {
+        sel.innerHTML = '<option value="">registry 无可用版本</option>';
+        return;
+      }
+      sel.innerHTML = "";
+      versions.slice(0, 40).forEach((v, i) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = v + (i === 0 ? "（最新）" : "");
+        sel.appendChild(o);
+      });
+    } catch (e) {
+      sel.innerHTML = '<option value="">查询失败</option>';
+    }
+  };
+  $("btnInstallKernel").onclick = async () => {
+    const v = $("kernelVersionSelect").value;
+    if (!v) {
+      toast("请先点击「可用版本」并选择一个版本", false);
+      return;
+    }
+    toast("正在安装内核 " + v + "（可能需要几分钟）…", true);
+    try {
+      const installed = await call("kernel_install", { version: v });
+      toast("内核 " + installed + " 安装完成 — 点击「启用」切换", true);
+      refreshKernels();
+    } catch (e) {}
+  };
+  $("btnCheckUpdate").onclick = checkDesktopUpdate;
+  $("btnOpenReleases").onclick = async () => {
+    try {
+      await call("open_external_url", { url: "https://github.com/RogueServitor-495/dsh-desktop/releases/latest" });
+    } catch (e) {}
+  };
   $("btnClearLogs").onclick = async () => {
     try {
       lastSeq = await call("clear_logs");
@@ -402,6 +589,7 @@ async function boot() {
   setInterval(refresh, 1500);
   refresh();
   refreshPlugins();
+  refreshKernels();
 
   // Subscribe to runtime-status last and never let it block boot: even if the
   // event system is slow/unavailable the panel still renders and polls.

@@ -1,5 +1,6 @@
 //! DSH Runtime Manager — Tauri backend.
 mod desktop_approval;
+mod kernels;
 mod paths;
 mod plugins;
 mod runtime;
@@ -57,15 +58,21 @@ pub struct Snapshot {
     pub bundled: bool,
     /// Short "node vX · dsh Y" summary of the bundled runtime ("" when absent).
     pub bundle_info: String,
+    /// Desktop app version (from Cargo/tauri config, compile-time).
+    pub app_version: String,
+    /// User-managed kernel version in use (None = bundled runtime).
+    pub kernel: Option<String>,
+    /// Install dir of the active kernel ("" when using the bundled runtime).
+    pub kernel_dir: String,
 }
 
-fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCore>>) -> Snapshot {
+fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCore>>, data_dir: &Path) -> Snapshot {
     let status = {
         let g = core.lock().unwrap_or_else(|e| e.into_inner());
         runtime::snapshot(&g)
     };
     let node_res = paths::detect_node(settings.node_path.as_deref());
-    let dsh_res = paths::detect_dsh(settings.dsh_bin.as_deref());
+    let dsh_res = paths::detect_dsh(settings.dsh_bin.as_deref(), settings.kernel.as_deref(), data_dir);
     let node = node_res
         .as_ref()
         .map(|p| p.display().to_string())
@@ -96,6 +103,13 @@ fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCor
         (_, _, Err(e)) => format!("⚠ {e}"),
         _ => "⚠ 未找到 node 或 dsh".to_string(),
     };
+    let kernel_dir = settings
+        .kernel
+        .as_deref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| paths::kernel_dir(data_dir, v).display().to_string())
+        .unwrap_or_default();
     Snapshot {
         status,
         settings: settings.clone(),
@@ -106,6 +120,9 @@ fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCor
         effective_cmd,
         bundled,
         bundle_info,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        kernel: settings.kernel.clone().filter(|v| !v.trim().is_empty()),
+        kernel_dir,
     }
 }
 
@@ -333,8 +350,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 async fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<Snapshot, String> {
     let settings = state.settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let core = state.core.clone();
+    let data_dir = state.data_dir.clone();
     let app_bg = app.clone();
-    tauri::async_runtime::spawn_blocking(move || snapshot_of(&app_bg, &settings, &core))
+    tauri::async_runtime::spawn_blocking(move || snapshot_of(&app_bg, &settings, &core, &data_dir))
         .await
         .map_err(|e| format!("snapshot task failed: {e}"))
 }
@@ -479,10 +497,11 @@ async fn add_plugin(
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
     let node = paths::detect_node(settings.node_path.as_deref())?;
-    let dsh = paths::detect_dsh(settings.dsh_bin.as_deref())?;
+    let dsh = paths::detect_dsh(settings.dsh_bin.as_deref(), settings.kernel.as_deref(), &state.data_dir)?;
     let data_dir = state.data_dir.clone();
     let profile = settings.profile.clone();
     let workspace = settings.workspace.clone();
+    let kernel = settings.kernel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let args = vec!["add".to_string(), spec, "-w".to_string()];
         plugins::run_plugin_op(
@@ -492,6 +511,7 @@ async fn add_plugin(
             &dsh,
             &args,
             Path::new(&workspace),
+            kernel.as_deref(),
         )
     })
     .await
@@ -513,10 +533,11 @@ async fn remove_plugin(
 ) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
     let node = paths::detect_node(settings.node_path.as_deref())?;
-    let dsh = paths::detect_dsh(settings.dsh_bin.as_deref())?;
+    let dsh = paths::detect_dsh(settings.dsh_bin.as_deref(), settings.kernel.as_deref(), &state.data_dir)?;
     let data_dir = state.data_dir.clone();
     let profile = settings.profile.clone();
     let workspace = settings.workspace.clone();
+    let kernel = settings.kernel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         plugins::remove_plugin(
             &data_dir,
@@ -525,6 +546,7 @@ async fn remove_plugin(
             &node,
             &dsh,
             Path::new(&workspace),
+            kernel.as_deref(),
         )
     })
     .await
@@ -592,13 +614,14 @@ async fn get_runtime_info(state: State<'_, AppState>) -> Result<plugins::Runtime
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let profile = settings.profile.clone();
         let timeout = std::time::Duration::from_secs(15);
         let dsh_version = (|| -> String {
             let (Ok(node_p), Ok(dsh_p)) = (
                 paths::detect_node(settings.node_path.as_deref()),
-                paths::detect_dsh(settings.dsh_bin.as_deref()),
+                paths::detect_dsh(settings.dsh_bin.as_deref(), settings.kernel.as_deref(), &data_dir),
             ) else {
                 return "未知".into();
             };
@@ -641,6 +664,86 @@ async fn get_runtime_info(state: State<'_, AppState>) -> Result<plugins::Runtime
     })
     .await
     .map_err(|e| format!("runtime info task failed: {e}"))
+}
+
+// ── kernel management ────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn kernel_list(state: State<'_, AppState>) -> Result<kernels::KernelList, String> {
+    let settings = state
+        .settings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || kernels::list_kernels(&data_dir, settings.kernel.as_deref()))
+        .await
+        .map_err(|e| format!("kernel list task failed: {e}"))
+}
+
+#[tauri::command]
+async fn kernel_registry() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(kernels::registry_versions)
+        .await
+        .map_err(|e| format!("registry task failed: {e}"))
+}
+
+#[tauri::command]
+async fn kernel_install(state: State<'_, AppState>, version: String) -> Result<String, String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || kernels::install_kernel(&data_dir, &version))
+        .await
+        .map_err(|e| format!("kernel install task failed: {e}"))
+}
+
+#[tauri::command]
+async fn kernel_delete(state: State<'_, AppState>, version: String) -> Result<(), String> {
+    let settings = state
+        .settings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        kernels::delete_kernel(&data_dir, &version, settings.kernel.as_deref())
+    })
+    .await
+    .map_err(|e| format!("kernel delete task failed: {e}"))
+}
+
+/// Switch the active kernel (None = bundled runtime), persist, and restart the
+/// runtime when it is running so the change takes effect immediately.
+#[tauri::command]
+async fn set_kernel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version: Option<String>,
+) -> Result<(), String> {
+    let version = version
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    if let Some(v) = version.as_deref() {
+        if paths::kernel_dsh_bin(&state.data_dir, v).is_none() {
+            return Err(format!("内核 {v} 尚未安装"));
+        }
+    }
+    {
+        let mut s = state.settings.lock().unwrap_or_else(|e| e.into_inner());
+        s.kernel = version.clone();
+        settings::save(&state.data_dir, &s)?;
+    }
+    restart_after_plugin_change(&app, &state);
+    update_tray(&app);
+    Ok(())
+}
+
+/// Open an external URL in the system browser (release pages etc.).
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("只允许 http(s) 链接".into());
+    }
+    desktop_approval::open_in_browser(&url)
 }
 
 // ── entry ────────────────────────────────────────────────────────────────────
@@ -763,7 +866,7 @@ pub fn run() {
                         }
                         "add" => {
                             let node = paths::detect_node(settings2.node_path.as_deref())?;
-                            let dsh = paths::detect_dsh(settings2.dsh_bin.as_deref())?;
+                            let dsh = paths::detect_dsh(settings2.dsh_bin.as_deref(), settings2.kernel.as_deref(), &data_dir2)?;
                             let spec = args.first().cloned().unwrap_or_default();
                             let pa = vec!["add".to_string(), spec, "-w".to_string()];
                             plugins::run_plugin_op(
@@ -773,11 +876,12 @@ pub fn run() {
                                 &dsh,
                                 &pa,
                                 Path::new(&settings2.workspace),
+                                settings2.kernel.as_deref(),
                             )
                         }
                         "remove" => {
                             let node = paths::detect_node(settings2.node_path.as_deref())?;
-                            let dsh = paths::detect_dsh(settings2.dsh_bin.as_deref())?;
+                            let dsh = paths::detect_dsh(settings2.dsh_bin.as_deref(), settings2.kernel.as_deref(), &data_dir2)?;
                             let name = args.first().cloned().unwrap_or_default();
                             plugins::remove_plugin(
                                 &data_dir2,
@@ -786,6 +890,7 @@ pub fn run() {
                                 &node,
                                 &dsh,
                                 Path::new(&settings2.workspace),
+                                settings2.kernel.as_deref(),
                             )
                         }
                         "set" => {
@@ -836,6 +941,12 @@ pub fn run() {
             set_plugin_enabled,
             get_runtime_info,
             open_control,
+            kernel_list,
+            kernel_registry,
+            kernel_install,
+            kernel_delete,
+            set_kernel,
+            open_external_url,
         ])
         .on_window_event(|window, event| {
             // Close-to-tray: the runtime manager keeps running in the background.

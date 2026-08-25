@@ -15,6 +15,10 @@ pub struct Settings {
     pub node_path: Option<String>,
     /// Explicit dsh bin.js path; None = auto-detect.
     pub dsh_bin: Option<String>,
+    /// Active user-managed kernel version under <data_dir>/kernels;
+    /// None = use the runtime bundled with the app.
+    #[serde(default)]
+    pub kernel: Option<String>,
     /// Start the runtime automatically when the app launches.
     pub start_on_launch: bool,
     /// Open the DSH GUI inside an app window (true) or the system browser (false).
@@ -36,6 +40,7 @@ impl Default for Settings {
             workspace: std::env::var("HOME").unwrap_or_else(|_| ".".into()),
             node_path: None,
             dsh_bin: None,
+            kernel: None,
             // Client 模式：双击打开即自动拉起运行时（可在管理面板关闭）
             start_on_launch: true,
             gui_in_app: true,
