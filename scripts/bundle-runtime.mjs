@@ -265,6 +265,17 @@ const natives = [
 const resolvable = [];
 const { cmd: npmCmd, args: npmArgs } = npmInvocation();
 for (const pkg of natives) {
+  // Prefer the pinned version: these packages become DIRECT deps of this
+  // install, and npm refuses (EOVERRIDE) when an override rewrites a direct
+  // dependency's spec — so the requested spec must equal the override.
+  // Pinning also keeps the bundle reproducible (npm view would float to
+  // whatever is newest at build time).
+  const pinnedVer = PINNED_RUNTIME_VERSIONS[pkg];
+  if (pinnedVer) {
+    resolvable.push(pkg + "@" + pinnedVer);
+    log("native pkg", pkg, "->", pinnedVer, "(pinned)");
+    continue;
+  }
   try {
     const v = spawnCapture(npmCmd, [...npmArgs, "view", pkg, "version"]).toString().trim();
     resolvable.push(pkg + "@" + v);
@@ -278,7 +289,7 @@ for (const pkg of natives) {
 // command because npm prunes extraneous (--no-save) packages on every run.
 // --force: npm rejects explicit installs of packages whose os/cpu don't match
 // the build machine (e.g. darwin-x64 on an arm64 Mac); we want both arches.
-const extras = [...resolvable, "pnpm@9"];
+const extras = [...resolvable, "pnpm@" + (PINNED_RUNTIME_VERSIONS.pnpm || "9")];
 const allExtrasPresent = extras.every((spec) => {
   const name = spec.split("@").slice(0, -1).join("@") || spec;
   const bare = spec.startsWith("@") ? spec.split("@").slice(0, 2).join("@") : spec.split("@")[0];
