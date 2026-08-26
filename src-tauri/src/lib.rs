@@ -10,7 +10,7 @@ use runtime::RuntimeCore;
 use settings::Settings;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Listener, Manager, State};
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 /// Menu handles refreshed by 'update_tray' as runtime status changes.
@@ -67,6 +67,75 @@ pub struct Snapshot {
 }
 
 fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCore>>, data_dir: &Path) -> Snapshot {
+    // Adopt an external runtime serving our port so the panel reflects reality
+    // even when dsh was started outside this manager (client model). Only when
+    // we have no child and no adopted process of our own.
+    let mut adopted = false;
+    {
+        let g = core.lock().unwrap_or_else(|e| e.into_inner());
+        if g.child.is_none() && g.external.is_none() {
+            adopted = true;
+        }
+    }
+    if adopted {
+        let pid = runtime::external_pid(settings.port);
+        if let Some(pid) = pid {
+            let status_snap = {
+                let mut g = core.lock().unwrap_or_else(|e| e.into_inner());
+                // re-check under the lock (another thread may have adopted)
+                if g.child.is_none() && g.external.is_none() {
+                    g.external = Some(pid);
+                    g.port = settings.port;
+                    g.phase = "running".into();
+                    g.ready = true;
+                    g.started_at = Some(std::time::Instant::now());
+                    g.wall_started_at = Some(std::time::SystemTime::now());
+                    g.last_exit = None;
+                    g.push_line(format!(
+                        "[manager] adopted existing runtime pid {pid} on port {}",
+                        settings.port
+                    ));
+                    Some(runtime::snapshot(&g))
+                } else {
+                    None
+                }
+            };
+            if let Some(s) = status_snap {
+                let _ = app.emit("runtime-status", s);
+            }
+        }
+    } else {
+        // We adopted an external runtime earlier: if it no longer serves the
+        // port, clear the stale external handle so the panel does not show a
+        // zombie "running" after the process was killed out-of-band.
+        let stale = {
+            let g = core.lock().unwrap_or_else(|e| e.into_inner());
+            match g.external {
+                Some(ext) => {
+                    match runtime::external_pid(settings.port) {
+                        Some(cur) => cur != ext,
+                        None => true,
+                    }
+                }
+                None => false,
+            }
+        };
+        if stale {
+            let status_snap = {
+                let mut g = core.lock().unwrap_or_else(|e| e.into_inner());
+                g.external = None;
+                g.phase = "stopped".into();
+                g.ready = false;
+                g.started_at = None;
+                g.wall_started_at = None;
+                g.push_line("[manager] external runtime no longer serving the port".into());
+                Some(runtime::snapshot(&g))
+            };
+            if let Some(s) = status_snap {
+                let _ = app.emit("runtime-status", s);
+            }
+        }
+    }
     let status = {
         let g = core.lock().unwrap_or_else(|e| e.into_inner());
         runtime::snapshot(&g)

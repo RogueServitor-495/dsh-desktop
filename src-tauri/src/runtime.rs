@@ -79,7 +79,9 @@ impl Default for RuntimeCore {
 
 /// Send a graceful-stop signal to a process tree.
 /// Unix: SIGTERM to the process group (dsh's graceful-drain contract).
-/// Windows: taskkill without /F (best effort; Windows has no POSIX signals).
+/// Windows: taskkill /T without /F first (best effort graceful — only works on
+/// windowed processes), then /F as a hard fallback after a short grace, because
+/// the bundled node is a windowless console process that ignores WM_CLOSE.
 fn signal_terminate(pid: u32, pgid: i32) {
     #[cfg(unix)]
     {
@@ -92,11 +94,40 @@ fn signal_terminate(pid: u32, pgid: i32) {
     #[cfg(windows)]
     {
         let _ = pgid; // no process groups on Windows; taskkill /T covers the tree
+        // Graceful attempt.
         let mut cmd = std::process::Command::new("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T"]);
         crate::paths::hide_console(&mut cmd);
         let _ = cmd.output();
+        // Give a windowed target a moment to close; windowless node ignores the
+        // WM_CLOSE and needs /F. Poll briefly instead of sleeping blindly.
+        let deadline = Instant::now() + Duration::from_millis(1800);
+        while Instant::now() < deadline {
+            if !pid_alive(pid) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        // Hard kill fallback.
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        crate::paths::hide_console(&mut cmd);
+        let _ = cmd.output();
     }
+}
+
+/// Windows: is a process with this PID alive? (tasklist is cheap and
+/// avoids needing admin rights to read the process table.)
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    if let Ok(proc) = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&proc.stdout);
+        return text.contains(&pid.to_string()) && !text.contains("INFO: No tasks");
+    }
+    false
 }
 
 /// Force-kill a process tree after the graceful deadline.
@@ -190,39 +221,79 @@ fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Find an orphaned dsh runtime process (not spawned by this app) bound to the port.
-/// Matches the current spawn form (--profile X --port N) and legacy (web --port N).
+/// Find an orphaned dsh runtime process (not spawned by this app) bound to the
+/// port, by asking the OS who LISTENs on it. More robust than matching a
+/// command line: external instances may use a different dsh path or arg form.
+/// The owning process must look like node/dsh so we never adopt an unrelated
+/// listener on the same port.
 pub fn external_pid(port: u16) -> Option<u32> {
+    let pids = external_pids_on_port(port);
+    pids.into_iter().find(|&pid| looks_like_dsh_process(pid))
+}
+
+/// PIDs currently LISTENing on the port (Windows: Get-NetTCPConnection,
+/// Unix: lsof; both are local, fast queries).
+fn external_pids_on_port(port: u16) -> Vec<u32> {
     #[cfg(windows)]
     {
         let script = format!(
-            "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ $_.CommandLine -like '*lib/bin.js*' -and $_.CommandLine -like '*--port {port}*' }} | Select-Object -First 1 -ExpandProperty ProcessId"
+            "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"
         );
         let mut cmd = std::process::Command::new("powershell");
         cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
         crate::paths::hide_console(&mut cmd);
-        let out = cmd.output().ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        return String::from_utf8_lossy(&out.stdout)
+        let out = cmd.output();
+        let out = match out {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&out.stdout)
             .lines()
-            .find_map(|l| l.trim().parse::<u32>().ok());
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .collect()
     }
     #[cfg(not(windows))]
     {
-        let pattern = format!("lib/bin.js.*--port {port}");
-        let out = std::process::Command::new("pgrep")
-            .args(["-f", &pattern])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
+        let out = std::process::Command::new("lsof")
+            .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+            .output();
+        let out = match out {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .next()
-            .and_then(|l| l.trim().parse::<u32>().ok())
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .collect()
+    }
+}
+
+/// A listening process is a dsh runtime if it is a node (Windows) / node-ish
+/// process, i.e. an Electron-style launcher would not be adopted by accident.
+fn looks_like_dsh_process(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName"
+        );
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        crate::paths::hide_console(&mut cmd);
+        let out = cmd.output();
+        let out = match out {
+            Ok(o) if o.status.success() => o,
+            _ => return false,
+        };
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+        name == "node" || name == "node.exe" || name.ends_with("node")
+    }
+    #[cfg(not(windows))]
+    {
+        let Ok(meta) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+            return false;
+        };
+        let name = meta.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+        name.contains("node")
     }
 }
 
@@ -369,21 +440,52 @@ pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Setting
     ch.readers.push(h1);
     ch.readers.push(h2);
 
-    // readiness watcher
+    // readiness watcher: only report ready when BOTH the port answers AND the
+    // spawned child is still alive — otherwise an orphaned listener on the same
+    // port (EADDRINUSE case) would make us claim ready while our child died.
     let c3 = core.clone();
     let app2 = app.clone();
     let h3 = std::thread::spawn(move || {
         loop {
-            {
-                let g = c3.lock().unwrap();
-                if g.child.is_none() {
-                    return;
+            let (child_alive, child_exit) = {
+                let mut g = c3.lock().unwrap();
+                match g.child.as_mut() {
+                    None => return,
+                    Some(ch) => match ch.child.try_wait() {
+                        Ok(Some(st)) => (false, Some(st.code())),
+                        Ok(None) => (true, None),
+                        Err(_) => (false, None),
+                    },
                 }
+            };
+            if !child_alive {
+                // child exited before ready — stop probing; the exit waiter
+                // owns the transition to stopped. Log once for diagnosis.
+                let mut g = c3.lock().unwrap();
+                if !g.ready && g.phase == "starting" {
+                    let code = child_exit
+                        .map(|c| c.map(|n| n.to_string()).unwrap_or_else(|| "?".into()))
+                        .unwrap_or_else(|| "?".into());
+                    g.push_line(format!("[manager] child exited before ready (code {code})"));
+                }
+                return;
             }
             if tcp_ok(port) {
                 let status = {
                     let mut g = c3.lock().unwrap();
                     if g.ready {
+                        return;
+                    }
+                    // double-check the child is still alive (it may have died
+                    // between the probe and now)
+                    let alive_now = match g.child.as_mut() {
+                        Some(ch) => match ch.child.try_wait() {
+                            Ok(None) => true,
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    if !alive_now {
                         return;
                     }
                     g.ready = true;
@@ -545,10 +647,16 @@ pub fn command_preview(node: &Path, dsh: &Path, args: &[String]) -> String {
 
 /// Graceful stop: SIGTERM to the process group (DSH drains and exits 0).
 pub fn stop(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>) -> Result<(), String> {
-    let (pid, pgid) = {
-        let g = core.lock().unwrap();
-        match g.child.as_ref() {
-            Some(ch) => (ch.pid, ch.pgid),
+    let (pid, pgid, child_alive) = {
+        let mut g = core.lock().unwrap();
+        match g.child.as_mut() {
+            Some(ch) => {
+                let alive = match ch.child.try_wait() {
+                    Ok(None) => true,
+                    _ => false,
+                };
+                (ch.pid, ch.pgid, alive)
+            }
             None => {
                 let port = g.port;
                 drop(g);
@@ -561,6 +669,33 @@ pub fn stop(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>) -> Result<(), Strin
             }
         }
     };
+    if !child_alive {
+        // The child already exited (e.g. crashed with EADDRINUSE) but we never
+        // noticed: stop whatever is serving the port instead, or clean up the
+        // stale child handle so the panel reflects the true state.
+        let port = {
+            let g = core.lock().unwrap();
+            g.port
+        };
+        if external_pid(port).is_some() {
+            return stop_external(app, core, port);
+        }
+        // No orphan on the port — just finalize the stale handle.
+        {
+            let status_snap = {
+                let mut g = core.lock().unwrap();
+                g.child = None;
+                g.phase = "stopped".into();
+                g.started_at = None;
+                g.wall_started_at = None;
+                g.ready = false;
+                g.push_line("[manager] child was already gone; state finalized".into());
+                snapshot(&g)
+            };
+            let _ = app.emit("runtime-status", status_snap);
+        }
+        return Ok(());
+    }
     {
         let status_snap = {
             let mut g = core.lock().unwrap();
