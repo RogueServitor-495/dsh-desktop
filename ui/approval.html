@@ -49,7 +49,7 @@ function applyTheme(dark) {
 }
 function scheduleHide() {
   clearTimeout(timeoutId);
-  timeoutId = setTimeout(function () { if (emitEv) emitEv("approval-popup-timeout", {}); }, 45000);
+  timeoutId = setTimeout(function () { if (emitEv) emitEv("approval-popup-timeout", {}); }, 600000);
 }
 document.getElementById("reject").addEventListener("click", function () {
   if (emitEv) emitEv("approval-popup-answer", { outcome: "rejected" });

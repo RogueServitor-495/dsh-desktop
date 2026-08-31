@@ -1,4 +1,5 @@
 //! DSH Runtime Manager — Tauri backend.
+mod approvals;
 mod desktop_approval;
 mod kernels;
 mod paths;
@@ -852,6 +853,9 @@ pub fn run() {
 
             // Desktop approval popup: wire the gui-webview bridge + popup window.
             desktop_approval::wire(app.handle());
+            // Kernel approval stream: surface approvals from every session,
+            // even when their conversation is not the one on screen.
+            approvals::spawn_watcher(app.handle().clone());
 
             // keep the tray menu in sync with runtime-status changes
             let app_ev = app.handle().clone();

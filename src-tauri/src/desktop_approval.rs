@@ -102,27 +102,43 @@ pub fn wire(app: &AppHandle) {
             std::thread::sleep(Duration::from_millis(1200));
         });
     }
-    // An approval appeared in the DSH UI -> show the popup.
+    // An approval appeared (kernel SSE stream or the DOM bridge) -> track it
+    // and show the popup when nothing else is being shown.
     {
         let app = app.clone();
         app.clone().listen("approval-pending", move |event| {
             // tauri::Event::payload() returns &str directly (2.x)
             let value =
                 serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
-            let _ = show_popup(&app, value);
+            crate::approvals::report_pending(&app, value);
         });
     }
-    // The approval was resolved in the DSH UI -> hide the popup.
+    // The kernel settled an exact approval (SSE approval/resolved) -> drop it
+    // and advance the queue when it owned the popup.
     {
         let app = app.clone();
-        app.clone()
-            .listen("approval-resolved", move |_event| hide_popup(&app));
+        app.clone().listen("approval-kernel-resolved", move |event| {
+            let value =
+                serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            crate::approvals::report_kernel_resolved(&app, value);
+        });
     }
-    // Popup auto-timeout -> just hide.
+    // The approval panel disappeared from the DSH UI -> hide + advance.
     {
         let app = app.clone();
         app.clone()
-            .listen("approval-popup-timeout", move |_event| hide_popup(&app));
+            .listen("approval-resolved", move |_event| {
+                hide_popup(&app);
+                crate::approvals::report_bridge_resolved(&app);
+            });
+    }
+    // Popup auto-timeout -> hide, but do not chain into the next one.
+    {
+        let app = app.clone();
+        app.clone().listen("approval-popup-timeout", move |_event| {
+            hide_popup(&app);
+            crate::approvals::report_popup_closed(&app);
+        });
     }
     // DSH light/dark theme -> popup, so the popup follows the DSH setting.
     // Remember the last observed theme and forward it whenever the popup exists;
@@ -153,20 +169,31 @@ pub fn wire(app: &AppHandle) {
             }
         });
     }
-    // Popup buttons -> forward the decision to the gui webview's bridge and
-    // bring the DSH window to the front so the user sees it settle.
+    // Popup buttons -> answer against the kernel directly when possible (so
+    // background-conversation approvals resolve without surfacing any window);
+    // otherwise fall back to the gui bridge clicking the real panel and bring
+    // the DSH window to the front so the user sees it settle.
     {
         let app = app.clone();
         app.clone().listen("approval-popup-answer", move |event| {
             // tauri::Event::payload() returns &str directly (2.x)
             let value =
                 serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_| json!({}));
+            let outcome = value
+                .get("outcome")
+                .and_then(|o| o.as_str())
+                .unwrap_or("")
+                .to_string();
+            if crate::approvals::answer_current(&app, &outcome) {
+                return;
+            }
             if let Some(gui) = app.get_webview_window("gui") {
                 let _ = gui.emit("approval-answer", value);
                 let _ = gui.show();
                 let _ = gui.set_focus();
             }
             hide_popup(&app);
+            crate::approvals::report_popup_closed(&app);
         });
     }
     // A link clicked in the DSH UI -> open it in the system browser, never in
@@ -222,7 +249,7 @@ fn position_bottom_right(app: &AppHandle, w: &WebviewWindow) {
     }
 }
 
-fn show_popup(app: &AppHandle, value: Value) -> Result<(), String> {
+pub(crate) fn show_popup(app: &AppHandle, value: Value) -> Result<(), String> {
     let w = ensure_popup(app).ok_or("cannot create approval popup window")?;
     position_bottom_right(app, &w);
     let _ = w.emit("approval-popup-data", value);
@@ -235,7 +262,7 @@ fn show_popup(app: &AppHandle, value: Value) -> Result<(), String> {
     Ok(())
 }
 
-fn hide_popup(app: &AppHandle) {
+pub(crate) fn hide_popup(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("approval-popup") {
         let _ = w.hide();
     }
