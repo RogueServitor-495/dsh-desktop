@@ -29,7 +29,7 @@ const RES = path.join(ROOT, "src-tauri", "resources", "runtime");
 const CACHE = path.join(ROOT, ".runtime-cache");
 
 const NODE_MAJOR = process.env.BUNDLE_NODE_MAJOR || "24";
-const DSH_VERSION = process.env.BUNDLE_DSH_VERSION || "0.1.0-rc.6";
+const DSH_VERSION = process.env.BUNDLE_DSH_VERSION || "0.1.5-rc.2";
 // The runtime dependency tree is pinned two ways that MUST stay in sync:
 //  1. overrides (below) pin the resolved versions in package.json, and
 //  2. the COMMITTED package-lock.json in src-tauri/resources/runtime/dsh is
