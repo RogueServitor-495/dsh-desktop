@@ -27,6 +27,10 @@ pub struct StatusInfo {
     pub last_exit: Option<i32>,
     pub port: u16,
     pub ready: bool,
+    /// Launch token parsed from the kernel's startup URL, or None on kernels
+    /// that print a bare URL (before browser-session auth). The UI uses it to
+    /// open the GUI; it is a session credential and is never logged.
+    pub launch_token: Option<String>,
     pub log_file: String,
     pub log_seq: u64,
 }
@@ -56,6 +60,12 @@ pub struct RuntimeCore {
     pub log_handle: Option<std::fs::File>,
     pub port: u16,
     pub ready: bool,
+    /// Browser-session launch token captured from the child's startup URL
+    /// (`dsh web: http://127.0.0.1:<port>/?token=<token>`). Kernels before
+    /// 0.1.2-rc.1 print no token, so this stays None and every consumer falls
+    /// back to the bare URL. Held in memory only: it must never reach the ring
+    /// buffer, the log file, or the process command line.
+    pub launch_token: Option<String>,
 }
 
 impl Default for RuntimeCore {
@@ -73,6 +83,7 @@ impl Default for RuntimeCore {
             log_handle: None,
             port: crate::settings::DEFAULT_PORT,
             ready: false,
+            launch_token: None,
         }
     }
 }
@@ -171,9 +182,44 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Split one kernel output line into its loggable form and the launch token it
+/// carried. The token is a browser-session credential: the redacted form is
+/// what reaches the ring buffer, the log file and the UI, so `?token=<secret>`
+/// never survives into `runtime.log`.
+///
+/// Hand-rolled on purpose — the crate set has no regex dependency.
+fn take_launch_token(line: &str) -> (String, Option<String>) {
+    /// Query parameter the web app appends to its startup URL.
+    const MARK: &str = "?token=";
+    /// Shortest value treated as a real token; the kernel mints 32 random
+    /// bytes as base64url (43 chars), so this only filters noise.
+    const MIN_LEN: usize = 20;
+    let Some(at) = line.find(MARK) else {
+        return (line.to_string(), None);
+    };
+    let start = at + MARK.len();
+    let value: String = line[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if value.is_empty() {
+        return (line.to_string(), None);
+    }
+    let mut redacted = String::with_capacity(line.len());
+    redacted.push_str(&line[..start]);
+    redacted.push_str("***");
+    redacted.push_str(&line[start + value.len()..]);
+    let token = if value.len() >= MIN_LEN { Some(value) } else { None };
+    (redacted, token)
+}
+
 impl RuntimeCore {
     pub fn push_line(&mut self, line: String) {
         let line = strip_ansi(&line);
+        let (line, token) = take_launch_token(&line);
+        if let Some(t) = token {
+            self.launch_token = Some(t);
+        }
         let line: String = line.chars().take(MAX_LINE_CHARS).collect();
         if line.trim().is_empty() {
             return;
@@ -202,6 +248,7 @@ pub fn snapshot(g: &RuntimeCore) -> StatusInfo {
         last_exit: g.last_exit,
         port: g.port,
         ready: g.ready,
+        launch_token: g.launch_token.clone(),
         log_file: g
             .log_file
             .as_ref()
@@ -334,6 +381,9 @@ pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Setting
         g.port = port;
         g.phase = if ready { "running".into() } else { "starting".into() };
         g.ready = ready;
+        // Adopted runtimes are not our child, so their stdout never reached us:
+        // no token can be captured here. Clear any stale one from a previous run.
+        g.launch_token = None;
         g.started_at = Some(Instant::now());
         g.wall_started_at = Some(SystemTime::now());
         g.last_exit = None;
@@ -350,6 +400,7 @@ pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Setting
     g.wall_started_at = Some(SystemTime::now());
     g.last_exit = None;
     g.ready = false;
+    g.launch_token = None;
 
     let log_path = logs_dir(app)?.join("runtime.log");
     let log_file = std::fs::OpenOptions::new()
@@ -365,7 +416,7 @@ pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Setting
     ));
 
     // build launch args (validated, shared with the UI preview)
-    let args = build_launch_args(settings, port)?;
+    let args = build_launch_args(settings, port, Some(&dsh))?;
     let mut cmd = Command::new(&node);
     cmd.arg(&dsh).args(&args);
     let overlay = crate::plugins::overlay_path(&settings.profile);
@@ -592,7 +643,10 @@ pub fn start(app: &AppHandle, core: &Arc<Mutex<RuntimeCore>>, settings: &Setting
 
 /// Build the launch arguments for dsh from settings; validates unsafe values.
 /// Launcher flags first (--profile/--patch), then web-app flags (--host/--port/--trusted-host).
-pub fn build_launch_args(settings: &Settings, port: u16) -> Result<Vec<String>, String> {
+///
+/// `dsh` is the resolved bin.js, used only to gate version-specific flags on the
+/// kernel's own capabilities; pass None when the path is unknown.
+pub fn build_launch_args(settings: &Settings, port: u16, dsh: Option<&Path>) -> Result<Vec<String>, String> {
     let mut args: Vec<String> = Vec::new();
     // Launcher-level flags MUST come first: dsh's parser passes through
     // everything after the first token it does not recognize (passThroughOptions),
@@ -624,6 +678,12 @@ pub fn build_launch_args(settings: &Settings, port: u16) -> Result<Vec<String>, 
     {
         args.push("--trusted-host".into());
         args.push(h.trim().to_string());
+    }
+    // Kernels from 0.1.2-rc.1 on open the system browser when they start, which
+    // a desktop app never wants; older kernels have no such flag and would
+    // reject it, so the capability probe decides.
+    if dsh.is_some_and(crate::kernel_caps::supports_browser_auth) {
+        args.push("--no-open".into());
     }
     for piece in settings.extra_args.split_whitespace() {
         args.push(piece.to_string());
@@ -820,3 +880,107 @@ pub fn clear_logs(core: &Arc<Mutex<RuntimeCore>>) -> u64 {
     }
     g.seq
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> Settings {
+        let mut s = Settings::default();
+        s.profile = "test-profile".into();
+        s.trusted_hosts = String::new();
+        s.extra_args = String::new();
+        s
+    }
+
+    /// Throwaway kernel tree (`<dir>/lib/bin.js` + `package.json`) so the
+    /// capability probe can read a version without a real install.
+    fn fake_kernel(version: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-caps-{}-{}",
+            std::process::id(),
+            version.replace(['.', '-'], "_")
+        ));
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            format!("{{\"name\":\"@deepseek-ai/dsh\",\"version\":\"{version}\"}}"),
+        )
+        .unwrap();
+        let bin = dir.join("lib").join("bin.js");
+        std::fs::write(&bin, "").unwrap();
+        bin
+    }
+
+    /// The exact startup line a 0.1.2-rc.1+ kernel prints.
+    const TOKENED_LINE: &str = "dsh web: http://127.0.0.1:3080/?token=Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWY";
+    const TOKEN: &str = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWY";
+
+    #[test]
+    fn captures_the_launch_token_and_redacts_the_log_line() {
+        let (redacted, token) = take_launch_token(TOKENED_LINE);
+        assert_eq!(token.as_deref(), Some(TOKEN));
+        assert!(!redacted.contains(TOKEN), "token survived redaction: {redacted}");
+        assert!(redacted.contains("?token=***"), "redacted: {redacted}");
+        assert!(
+            redacted.starts_with("dsh web: http://127.0.0.1:3080/"),
+            "redaction mangled the line: {redacted}"
+        );
+    }
+
+    #[test]
+    fn push_line_stores_the_token_but_never_logs_it() {
+        let mut core = RuntimeCore::default();
+        core.push_line(TOKENED_LINE.into());
+        assert_eq!(core.launch_token.as_deref(), Some(TOKEN));
+        let logged: String = core.ring.iter().map(|(_, l)| l.as_str()).collect();
+        assert!(!logged.contains(TOKEN), "token reached the ring buffer: {logged}");
+        assert!(logged.contains("?token=***"), "ring: {logged}");
+    }
+
+    #[test]
+    fn a_bare_url_carries_no_token() {
+        let (line, token) = take_launch_token("dsh web: http://127.0.0.1:3080");
+        assert!(token.is_none());
+        assert_eq!(line, "dsh web: http://127.0.0.1:3080");
+    }
+
+    /// A short lookalike is still redacted, but never mistaken for a real token.
+    #[test]
+    fn short_lookalikes_are_redacted_but_not_stored() {
+        let (line, token) = take_launch_token("hint: append ?token=abc to the url");
+        assert!(token.is_none());
+        assert!(line.contains("?token=***"), "line: {line}");
+    }
+
+    #[test]
+    fn no_open_is_added_only_for_kernels_that_support_it() {
+        let s = settings();
+        let new_kernel = fake_kernel("0.1.5-rc.2");
+        let old_kernel = fake_kernel("0.1.0-rc.6");
+        let with_new = build_launch_args(&s, 3199, Some(&new_kernel)).unwrap();
+        let with_old = build_launch_args(&s, 3199, Some(&old_kernel)).unwrap();
+        let unknown = build_launch_args(&s, 3199, None).unwrap();
+        assert!(
+            with_new.iter().any(|a| a == "--no-open"),
+            "new kernel should get --no-open: {with_new:?}"
+        );
+        assert!(
+            !with_old.iter().any(|a| a == "--no-open"),
+            "old kernel has no such flag and must not receive it: {with_old:?}"
+        );
+        assert!(
+            !unknown.iter().any(|a| a == "--no-open"),
+            "unknown kernel must keep the old behaviour: {unknown:?}"
+        );
+        for args in [&with_new, &with_old, &unknown] {
+            assert!(
+                args.windows(2).any(|w| w[0] == "--port" && w[1] == "3199"),
+                "port flag lost: {args:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(new_kernel.parent().unwrap().parent().unwrap());
+        let _ = std::fs::remove_dir_all(old_kernel.parent().unwrap().parent().unwrap());
+    }
+}
+

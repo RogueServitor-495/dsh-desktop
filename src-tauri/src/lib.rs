@@ -1,6 +1,7 @@
 //! DSH Runtime Manager — Tauri backend.
 mod approvals;
 mod desktop_approval;
+mod kernel_caps;
 mod kernels;
 mod paths;
 mod plugins;
@@ -167,8 +168,13 @@ fn snapshot_of(app: &AppHandle, settings: &Settings, core: &Arc<Mutex<RuntimeCor
         })
         .unwrap_or_default();
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    let gui_url = format!("http://127.0.0.1:{}", status.port);
-    let effective_cmd = match (node_res, dsh_res, runtime::build_launch_args(&settings, status.port)) {
+    let gui_url = gui_url_for(status.port, status.launch_token.as_deref());
+    let dsh_for_probe = dsh_res.as_ref().ok().cloned();
+    let effective_cmd = match (
+        node_res,
+        dsh_res,
+        runtime::build_launch_args(&settings, status.port, dsh_for_probe.as_deref()),
+    ) {
         (Ok(n), Ok(d), Ok(args)) => runtime::command_preview(&n, &d, &args),
         (_, _, Err(e)) => format!("⚠ {e}"),
         _ => "⚠ 未找到 node 或 dsh".to_string(),
@@ -234,20 +240,65 @@ fn focus_gui(app: &AppHandle) {
     }
 }
 
-fn open_gui_inner(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let url = format!("http://127.0.0.1:{}", settings.port);
+/// Absolute URL the DSH GUI is served at. Kernels with browser-session auth
+/// (0.1.2-rc.1 and later) answer 401 for the bare origin, so the launch token
+/// rides in the query string: visiting it exchanges the token for the session
+/// cookie and redirects to a clean `/`. Older kernels print no token and keep
+/// the plain URL, exactly as before.
+fn gui_url_for(port: u16, launch_token: Option<&str>) -> String {
+    match launch_token {
+        Some(t) if !t.is_empty() => format!("http://127.0.0.1:{port}/?token={t}"),
+        _ => format!("http://127.0.0.1:{port}/"),
+    }
+}
+
+/// Last launch token the GUI window was navigated with. A different token means
+/// the runtime restarted and the in-app window holds a dead session, so it must
+/// be re-authenticated; the same token means it is already signed in and a
+/// repeated click should only refocus it.
+static LAST_GUI_TOKEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn last_gui_token() -> std::sync::MutexGuard<'static, Option<String>> {
+    LAST_GUI_TOKEN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn open_gui_inner(
+    app: &AppHandle,
+    settings: &Settings,
+    launch_token: Option<&str>,
+) -> Result<(), String> {
+    let url = gui_url_for(settings.port, launch_token);
+    let bare = format!("http://127.0.0.1:{}", settings.port);
     if settings.gui_in_app {
         use tauri::WebviewWindowBuilder;
         if let Some(w) = app.get_webview_window("gui") {
+            let stale = {
+                let mut last = last_gui_token();
+                let stale = launch_token.is_some() && last.as_deref() != launch_token;
+                if launch_token.is_some() {
+                    *last = launch_token.map(str::to_string);
+                }
+                stale
+            };
+            if stale {
+                if let Ok(target) = url.parse() {
+                    let _ = w.navigate(target);
+                }
+            }
+            let _ = w.show();
+            let _ = w.unminimize();
             let _ = w.set_focus();
             return Ok(());
         }
         let url_parsed = url.parse().map_err(|e| format!("bad url: {e}"))?;
         WebviewWindowBuilder::new(app, "gui", tauri::WebviewUrl::External(url_parsed))
-            .title(format!("DSH — {url}"))
+            // The title is user-visible (taskbar, screen share): keep the
+            // credential out of it and show the bare origin.
+            .title(format!("DSH — {bare}"))
             .inner_size(1280.0, 840.0)
             .build()
             .map_err(|e| format!("cannot open GUI window: {e}"))?;
+        *last_gui_token() = launch_token.map(str::to_string);
         Ok(())
     } else {
         std::process::Command::new("open")
@@ -386,7 +437,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "tray-open-gui" => {
                 let state = app.state::<AppState>();
                 let settings = state.settings.lock().unwrap().clone();
-                let _ = open_gui_inner(app, &settings);
+                let token = state
+                    .core
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .launch_token
+                    .clone();
+                let _ = open_gui_inner(app, &settings, token.as_deref());
             }
             "tray-autostart" => tray_action(app, "autostart"),
             "tray-quit" => app.exit(0),
@@ -497,7 +554,13 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), S
 #[tauri::command]
 fn open_gui(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let settings = state.settings.lock().unwrap().clone();
-    open_gui_inner(&app, &settings)
+    let token = state
+        .core
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .launch_token
+        .clone();
+    open_gui_inner(&app, &settings, token.as_deref())
 }
 
 #[tauri::command]

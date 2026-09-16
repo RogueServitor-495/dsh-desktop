@@ -3,10 +3,14 @@
 //! The embedded DSH UI only renders its approval panel for the conversation
 //! currently on screen, so a pending approval in a background conversation
 //! never reached the desktop popup. This module watches the kernel directly:
-//! `GET /api/events.mux` (a downlink WebSocket) broadcasts `approval/requested` /
-//! `approval/resolved` frames for every session no matter what the UI
-//! shows (and replays still-pending ones on connect), while
-//! `POST /api/respond` settles a pending approval by its envelope rpcId.
+//! the kernel's approval mux (a downlink WebSocket; `/api/remote.mux` on the
+//! current dsh-api-gateway kernels, `/api/events.mux` on the older
+//! dsh-host-apiproxy ones — see MUX_PATHS) broadcasts `approval/requested` /
+//! `approval/resolved` frames for every session no matter what the UI shows (and
+//! replays still-pending ones on connect). On the older kernels
+//! `POST /api/respond` then settles a pending approval by its envelope rpcId;
+//! that endpoint is gone from the newer ones, which answer 404, so there the
+//! popup falls back to the DOM bridge below.
 //! The DOM bridge in desktop_approval.rs stays as the display and fallback
 //! path for approvals whose panel is actually visible.
 
@@ -49,6 +53,97 @@ fn port_of(app: &AppHandle) -> Option<u16> {
     Some(core.port)
 }
 
+/// Launch token of the runtime currently supervised (None on kernels that have
+/// no browser-session auth, and on adopted runtimes whose stdout we never saw).
+fn launch_token_of(app: &AppHandle) -> Option<String> {
+    let state = app.try_state::<AppState>()?;
+    let core = state.core.lock().unwrap_or_else(|e| e.into_inner());
+    core.launch_token.clone()
+}
+
+/// Session cookie minted from a launch token, cached as (port, token, cookie)
+/// so a runtime restart — which mints a new token — invalidates it by itself.
+static AUTH_COOKIE: Mutex<Option<(u16, String, String)>> = Mutex::new(None);
+
+fn auth_lock() -> std::sync::MutexGuard<'static, Option<(u16, String, String)>> {
+    AUTH_COOKIE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Exchange the launch token for the browser-session cookie with one plain
+/// `GET /?token=…`. The kernel answers 303 with `Set-Cookie`; the cookie is
+/// bound to the request authority, so the Host header here MUST carry the port —
+/// the same authority the API and WebSocket calls below will use.
+fn exchange_cookie(port: u16, token: &str) -> Result<String, String> {
+    let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("connect: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    let mut stream = stream;
+    let request = format!(
+        "GET /?token={token} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&raw);
+    for line in text.lines() {
+        let (name, value) = match line.split_once(':') {
+            Some(kv) => kv,
+            None => continue,
+        };
+        if !name.eq_ignore_ascii_case("set-cookie") {
+            continue;
+        }
+        // Keep the bare `name=value` pair: attributes (Path/Max-Age/…) are the
+        // browser's business, a raw request only echoes the pair back.
+        let pair = value.split(';').next().unwrap_or("").trim();
+        if pair.contains('=') {
+            return Ok(pair.to_string());
+        }
+    }
+    Err("no session cookie in the token exchange response".into())
+}
+
+/// Cookie to authenticate kernel API calls with, or None when the kernel needs
+/// none (pre-0.1.2-rc.1 releases) or the token is unknown (adopted runtime).
+fn auth_cookie(app: &AppHandle, port: u16) -> Option<String> {
+    let token = launch_token_of(app)?;
+    {
+        let cached = auth_lock();
+        if let Some((p, t, cookie)) = cached.as_ref() {
+            if *p == port && *t == token {
+                return Some(cookie.clone());
+            }
+        }
+    }
+    let cookie = match exchange_cookie(port, &token) {
+        Ok(c) => c,
+        Err(e) => {
+            // Approval requests then fall back to the unauthenticated path, which
+            // is exactly the pre-token behaviour.
+            note_auth_error(app, &e);
+            return None;
+        }
+    };
+    *auth_lock() = Some((port, token, cookie.clone()));
+    Some(cookie)
+}
+
+/// Record a token-exchange failure on the runtime log, so it shows up in the
+/// manager panel instead of silently degrading the approval popups.
+fn note_auth_error(app: &AppHandle, detail: &str) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state
+            .core
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_line(format!("[manager] browser-session auth unavailable: {detail}"));
+    }
+}
+
 fn popup_payload(entry: &Entry) -> Value {
     json!({ "key": entry.key, "headline": entry.headline, "command": entry.command })
 }
@@ -57,7 +152,7 @@ fn popup_payload(entry: &Entry) -> Value {
 /// and surface every approval frame as a desktop event. Reconnects until exit.
 pub fn spawn_watcher(app: AppHandle) {
     std::thread::spawn(move || loop {
-        let opened = port_of(&app).and_then(|p| open_ws(p).ok());
+        let opened = port_of(&app).and_then(|p| open_ws(&app, p).ok());
         match opened {
             Some(mut conn) => {
                 // A reconnect's replay re-adds still-pending approvals, so any
@@ -132,15 +227,39 @@ fn base64_16(bytes: &[u8; 16]) -> String {
 }
 
 /// Open the downlink: HTTP/1.1 Upgrade handshake, then keep the raw socket.
-fn open_ws(port: u16) -> Result<WsConn, String> {
+/// Mux stream paths, newest first. Kernels from the dsh-api-gateway generation
+/// serve the approval stream at /api/remote.mux; earlier ones, built on the
+/// removed dsh-host-apiproxy layer, only know /api/events.mux. Both answer 401
+/// without the session cookie, so the probe carries it either way.
+const MUX_PATHS: [&str; 2] = ["/api/remote.mux", "/api/events.mux"];
+
+/// Open the approval mux stream, trying every path the kernel family might use.
+/// The first one that completes a 101 upgrade wins; when none does, the last
+/// failure is reported so the log names the endpoint that was actually tried.
+fn open_ws(app: &AppHandle, port: u16) -> Result<WsConn, String> {
+    let mut last = String::from("no mux path attempted");
+    for path in MUX_PATHS {
+        match try_open_ws(app, port, path) {
+            Ok(conn) => return Ok(conn),
+            Err(e) => last = format!("{path}: {e}"),
+        }
+    }
+    Err(last)
+}
+
+fn try_open_ws(app: &AppHandle, port: u16, path: &str) -> Result<WsConn, String> {
     let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(15)))
         .map_err(|e| e.to_string())?;
     let mut stream = stream;
     let key = base64_16(&ws_key_seed());
+    let cookie = match auth_cookie(app, port) {
+        Some(c) => format!("Cookie: {c}\r\n"),
+        None => String::new(),
+    };
     let request = format!(
-        "GET /api/events.mux HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(stream);
@@ -472,7 +591,7 @@ pub fn answer_current(app: &AppHandle, outcome: &str) -> bool {
         Some(p) => p,
         None => return false,
     };
-    match http_respond(port, &rpc_id, &session_id, &approval_id, outcome) {
+    match http_respond(app, port, &rpc_id, &session_id, &approval_id, outcome) {
         Ok(_) => {
             {
                 let mut g = pending_lock();
@@ -510,6 +629,7 @@ fn show_next(app: &AppHandle) {
 
 /// POST the client-response envelope the kernel's pending table routes by.
 fn http_respond(
+    app: &AppHandle,
     port: u16,
     rpc_id: &str,
     session_id: &str,
@@ -529,7 +649,7 @@ fn http_respond(
         }
     })
     .to_string();
-    let reply = http_request(port, "POST", "/api/respond", Some(&body))?;
+    let reply = http_request(app, port, "POST", "/api/respond", Some(&body))?;
     let v: Value =
         serde_json::from_str(reply.trim()).map_err(|e| format!("bad respond reply: {e}"))?;
     Ok(v.get("accepted").and_then(|a| a.as_bool()).unwrap_or(false))
@@ -537,7 +657,13 @@ fn http_respond(
 
 /// Minimal HTTP/1.0 client over a raw TcpStream: close-delimited bodies, no
 /// chunk decoding needed on this path, no new dependencies.
-fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
+fn http_request(
+    app: &AppHandle,
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<String, String> {
     let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -547,6 +673,9 @@ fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> Resu
         .map_err(|e| e.to_string())?;
     let mut stream = stream;
     let mut request = format!("{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+    if let Some(cookie) = auth_cookie(app, port) {
+        request.push_str(&format!("Cookie: {cookie}\r\n"));
+    }
     if let Some(b) = body {
         request.push_str("Content-Type: application/json\r\n");
         request.push_str(&format!("Content-Length: {}\r\n", b.as_bytes().len()));
