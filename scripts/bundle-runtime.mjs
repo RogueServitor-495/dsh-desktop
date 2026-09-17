@@ -22,6 +22,7 @@ import { Readable } from "node:stream";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { patchSettingsCompatibility } from "./settings-compat.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -380,6 +381,8 @@ await rm(path.join(dshDir, "node_modules", "@img", "sharp-wasm32"), { recursive:
 log("trim done");
 
 // ── 4. verify + manifest ────────────────────────────────────────────────────
+// Apply after every npm operation, including extras which may replace packages.
+log("settings compatibility export added:", await patchSettingsCompatibility(dshDir));
 const dshPkg = JSON.parse(
   await readFile(path.join(dshDir, "node_modules", "@deepseek-ai", "dsh", "package.json"), "utf8")
 );
@@ -399,6 +402,16 @@ const hostNodeBin = process.platform === "win32"
 if (!existsSync(hostNodeBin)) {
   log("WARN: no host node in bundle (" + hostNodeBin + ") — skipping smoke");
 } else {
+  const settingsSmoke = [
+    "import assert from 'node:assert/strict';",
+    "import { settingsNamespace, SettingsProvider } from '@deepseek-ai/dsh-settings';",
+    "assert.equal(settingsNamespace('dsh-plugin-speaker'), 'dsh-plugin-speaker');",
+    "assert.equal(settingsNamespace('chat-display'), 'chat-display');",
+    "assert.throws(() => settingsNamespace('Invalid_name'), TypeError);",
+    "assert.equal(typeof SettingsProvider, 'function');",
+  ].join("\n");
+  run(hostNodeBin, ["--input-type=module", "-e", settingsSmoke], { cwd: dshDir });
+  log("smoke: legacy settings imports + namespace validation passed");
   const out = spawnCapture(hostNodeBin, [binJs, "-V"]).toString().trim();
   log("smoke: bundled node + dsh -V ->", out);
 }

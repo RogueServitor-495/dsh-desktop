@@ -4,6 +4,7 @@
   "private": true,
   "description": "Tauri desktop app managing the DeepSeek Harness (dsh) runtime",
   "scripts": {
+    "test": "node --test scripts/settings-compat.test.mjs",
     "tauri": "tauri",
     "bundle:runtime": "node scripts/bundle-runtime.mjs",
     "build:app": "tauri build",

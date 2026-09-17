@@ -31,6 +31,8 @@ jobs:
           path: .runtime-cache
           key: runtime-cache-${{ runner.os }}-node24
       - run: npm ci
+      - name: Test runtime compatibility
+        run: npm test
       - name: Bundle runtime (win32-x64 node + dsh + pnpm)
         env:
           BUNDLE_PLATFORMS: win32-x64
@@ -66,6 +68,8 @@ jobs:
           path: .runtime-cache
           key: runtime-cache-${{ runner.os }}-node24
       - run: npm ci
+      - name: Test runtime compatibility
+        run: npm test
       - name: Bundle runtime (darwin-arm64 node + dsh + pnpm)
         env:
           BUNDLE_PLATFORMS: darwin-arm64
